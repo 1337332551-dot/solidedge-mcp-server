@@ -33,7 +33,9 @@ internal enum RiskTier
 ///   模式由环境变量决定,进程启动时 Configure 一次:
 ///   SE_MCP_MODE=readonly|engineer|full;旧 SE_MCP_READONLY=1 兼容映射 readonly;SE_MCP_MODE 给了未识别值则 fail-closed 按只读。
 /// - fail-closed:未登记的工具名一律拒绝(防新工具漏登记直接裸奔)。
-/// - 被禁工具仍留在 tools/list 里,拒绝发生在 tools/call,拒绝信息带切换指路(改环境变量+重启会话)。
+/// - readonly 模式下非 Read 档工具在注册期即被滤除、不进 tools/list(Program.DiscoverVisibleTools),
+///   工具描述不暴露给 AI;engineer/full 模式工具全量注册,限制只发生在 tools/call,
+///   拒绝信息带切换指路(改环境变量+重启会话)。
 /// - 与内层 Guardrail 的分工:这里管"整个工具能不能调",Guardrail 管"成员级风险分级+confirm"。
 /// </summary>
 internal static class ToolRisk

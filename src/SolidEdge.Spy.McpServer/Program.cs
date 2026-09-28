@@ -80,14 +80,42 @@ namespace SolidEdge.Spy.McpServer
             // 响应侧 stdoutTap 既是协议出口,也作权限层写"拒绝响应"的汇入点。
             // 工具代码零改动(见 PermissionTap.cs / Telemetry/JsonRpcTap.cs;绝不向 stdout 打日志)。
             var stdoutTap = new SolidEdge.Spy.McpServer.Telemetry.JsonRpcTap(Console.OpenStandardOutput(), isRequestSide: false, source: "mcp");
-            builder.Services
+            var mcpBuilder = builder.Services
                 .AddMcpServer()
                 .WithStreamServerTransport(
                     new SolidEdge.Spy.McpServer.PermissionTap(
                         new SolidEdge.Spy.McpServer.Telemetry.JsonRpcTap(Console.OpenStandardInput(), isRequestSide: true, source: "mcp"),
                         stdoutTap),
-                    stdoutTap)
-                .WithToolsFromAssembly();
+                    stdoutTap);
+
+            // 只读模式:非 Read 档工具在注册期即被滤除,不进 tools/list——工具描述(含
+            // 参数 schema)完全不暴露给 AI,而不是"列表可见、调用被拒"。被滤工具即使
+            // 通过客户端缓存的旧列表硬调,PermissionTap/ToolRisk.Check 仍在 tools/call
+            // 层拒绝(fail-closed),纵深防御不变。其余模式仍走 WithToolsFromAssembly。
+            //
+            // 实现要点:工具必须**延迟创建**(AddSingleton<McpServerTool> 工厂 lambda,
+            // 首次解析时才 Create),并把宿主 IServiceProvider 传进 McpServerToolCreateOptions
+            // .Services——否则 SolidEdgeContext 这类注入参数会被当成必填 JSON 参数,
+            // 调用时抛 "missing a value for the required parameter 'context'"(2026-09-28 实测)。
+            // WithToolsFromAssembly 内部即等价于此做法。
+            if (SolidEdge.Spy.McpServer.Tools.ToolRisk.Mode == SolidEdge.Spy.McpServer.Tools.McpMode.ReadOnly)
+            {
+                int exposed = 0;
+                foreach (System.Reflection.MethodInfo toolMethod in EnumerateVisibleToolMethods())
+                {
+                    System.Reflection.MethodInfo captured = toolMethod;
+                    mcpBuilder.Services.AddSingleton<ModelContextProtocol.Server.McpServerTool>(serviceProvider =>
+                        ModelContextProtocol.Server.McpServerTool.Create(captured, (object)null,
+                            new ModelContextProtocol.Server.McpServerToolCreateOptions { Services = serviceProvider }));
+                    exposed++;
+                }
+                Console.Error.WriteLine("Tool registration: " + exposed
+                    + " tools exposed (readonly mode: non-Read tiers excluded from tools/list).");
+            }
+            else
+            {
+                mcpBuilder.WithToolsFromAssembly();
+            }
 
             // 注册我们的 SE 连接服务(单例,所有工具共享一个连接)
             builder.Services.AddSingleton<SolidEdgeContext>();
@@ -112,6 +140,38 @@ namespace SolidEdge.Spy.McpServer
 
             logger.LogInformation("MCP Server 已就绪,等待 AI 客户端调用工具。");
             await host.RunAsync();
+        }
+
+        /// <summary>
+        /// 反射扫描程序集里全部 [McpServerToolType]/[McpServerTool] 方法(与
+        /// WithToolsFromAssembly 同源),按 ToolRisk 档位只保留 Read 档。
+        /// 仅只读模式调用(见 RunServerAsync 里的分支);工具实例由调用方延迟创建。
+        /// </summary>
+        private static System.Collections.Generic.List<System.Reflection.MethodInfo> EnumerateVisibleToolMethods()
+        {
+            var visible = new System.Collections.Generic.List<System.Reflection.MethodInfo>();
+            foreach (Type type in typeof(Program).Assembly.GetTypes())
+            {
+                if (!type.IsDefined(typeof(ModelContextProtocol.Server.McpServerToolTypeAttribute), inherit: false))
+                {
+                    continue;
+                }
+                foreach (System.Reflection.MethodInfo method in type.GetMethods(
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance))
+                {
+                    if (!method.IsDefined(typeof(ModelContextProtocol.Server.McpServerToolAttribute), inherit: false))
+                    {
+                        continue;
+                    }
+                    // 工具名与运行时一致:方法名即工具名(本项目方法名已是 se_* 蛇形)。
+                    if (SolidEdge.Spy.McpServer.Tools.ToolRisk.TierOf(method.Name)
+                        == SolidEdge.Spy.McpServer.Tools.RiskTier.Read)
+                    {
+                        visible.Add(method);
+                    }
+                }
+            }
+            return visible;
         }
     }
 }
