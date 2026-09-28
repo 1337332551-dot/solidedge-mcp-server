@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "solidedge": {
+      "type": "local",
+      "command": ["D:\\github项目\\solidedge-mcp\\publish\\mcp-single\\solidedge-mcp.exe"],
+      "enabled": true
+    },
+    "solidedge-events": {
+      "type": "local",
+      "command": ["D:\\github项目\\solidedge-mcp\\publish\\event-single\\solidedge-event-mcp.exe"],
+      "enabled": true
+    }
+  }
+}
