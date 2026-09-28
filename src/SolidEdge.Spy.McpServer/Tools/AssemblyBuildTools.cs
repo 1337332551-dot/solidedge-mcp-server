@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using ModelContextProtocol.Server;
 
@@ -320,8 +321,22 @@ namespace SolidEdge.Spy.McpServer.Tools
             double[] before = AssemblySpec.ReadMatrix(occ);
             // 官方:Angle 单位弧度(SolidEdgeAssembly~Occurrence~Rotate.html Parameters)
             var o = (SolidEdgeAssembly.Occurrence)occ;
-            o.Rotate(op.Axis1[0], op.Axis1[1], op.Axis1[2],
-                     op.Axis2[0], op.Axis2[1], op.Axis2[2], DegToRad(op.Degrees));
+            // ★ 2026-09-22 本机实测(装配5,SE2022):Occurrence.Rotate(7参) 稳定 E_FAIL(0x80004005),
+            //   与 move 同款(move 已改走 PutOrigin 绕开)。这里保留先试 Rotate——远端线环境实测成功;
+            //   失败时明确报"本机通道不可用"并指路 transform,不再掉进通用 catch 变成一条
+            //   没有指路意义的 "执行异常: COMException hr=0x80004005"(日志里 4 条失败全由此而来)。
+            try
+            {
+                o.Rotate(op.Axis1[0], op.Axis1[1], op.Axis1[2],
+                         op.Axis2[0], op.Axis2[1], op.Axis2[2], DegToRad(op.Degrees));
+            }
+            catch (COMException)
+            {
+                return Err(op.Index, "rotate",
+                    "Occurrence.Rotate 在本机 SE2022 通道不可用(E_FAIL)。请改用 transform op(2026-09-24 冒烟实测可用):"
+                    + " {\"op\":\"transform\",\"component\":N,\"origin\":[x,y,z],\"angles\":[rx,ry,rz]},"
+                    + "angles 单位度、是绝对姿态不是增量;先 se_assembly_query 读当前矩阵算出目标姿态。");
+            }
 
             double[] after = AssemblySpec.ReadMatrix(occ);
             if (before == null || after == null)
@@ -335,10 +350,6 @@ namespace SolidEdge.Spy.McpServer.Tools
                 ["degrees"] = op.Degrees,
                 ["position"] = Slice(after, 12, 3)
             });
-            // ★ 2026-09-22 本机实测(装配5,SE2022):Occurrence.Rotate(7参) COM 调用本身稳定 E_FAIL
-            //   (0x80004005,自由件/保存后仍复现),与 move 同款;Occurrence.Move/Rotate 在本机通道不可用,
-            //   E_FAIL 异常由上方通用 catch 转 status:error 返回。替代方案:transform(绝对定位,已验证)。
-            //   留守 o.Rotate 原实现:远端线环境实测成功,本机若需旋转可先用 transform 等价换算。
         }
 
         private static object OpTransform(SolidEdgeContext context, object occurrences, AssemblySpec.AssemblyOp op)

@@ -45,7 +45,12 @@ public static class DocumentTools
 			return context.Invoke(delegate
 			{
 				Application application = context.GetApplication();
-				object activeDocument = application.ActiveDocument;
+				// SE 在没有活动文档时,ActiveDocument 是抛 COM 异常(0x80004005 E_FAIL),
+				// 不是返回 null。不 try 的话,"没开文档"会被误报成"获取文档信息失败: E_FAIL"
+				// (日志里 5 条此类失败全由此而来)。
+				object activeDocument;
+				try { activeDocument = application.ActiveDocument; }
+				catch { activeDocument = null; }
 				if (activeDocument == null)
 				{
 					return Error("当前没有活动文档。请在 Solid Edge 中打开一个文档(零件/装配/图纸)后再试。");

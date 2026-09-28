@@ -59,6 +59,10 @@ internal sealed class JsonRpcTap : Stream
 		"\"status\":\"compile_error\"",
 		"\"status\":\"exit_nonzero\"",
 		"\"status\":\"timeout\"",
+		// se_assembly_build 部分失败时外层是 {"status":"partial",...},失败明细在内层
+		// results[].status:"error"。之前只靠内层 error 侥幸命中——哪天 partial 里没有
+		// error 子项就会静默漏判,所以这里显式登记。
+		"\"status\":\"partial\"",
 	};
 
 	// 排障开关:环境变量 SE_MCP_TAP_DEBUG=1 时,把旁路观察到的行写 tap-debug.log(最多 500 行)。

@@ -18,7 +18,10 @@ public static class VariableTools
 		{
 			return context.Invoke(delegate
 			{
-				object activeDocument = context.GetApplication().ActiveDocument;
+				// SE 在没有活动文档时,ActiveDocument 抛 COM 异常(0x80004005 E_FAIL),不返回 null。
+				object activeDocument;
+				try { activeDocument = context.GetApplication().ActiveDocument; }
+				catch { activeDocument = null; }
 				if (activeDocument == null)
 				{
 					return Error("当前没有活动文档。");
