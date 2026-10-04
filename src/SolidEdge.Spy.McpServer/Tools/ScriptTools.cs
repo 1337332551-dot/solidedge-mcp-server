@@ -45,7 +45,8 @@ public static class ScriptTools
 		[Description("脚本名称,仅限字母/数字/下划线/短横线(1~64位)。用作沙箱子目录与编译产物名,同名会覆盖")] string name,
 		[Description("C# 脚本完整源码(含 using 与 Main 入口,C# 5 语法)。与 filePath 二选一;两者都不提供时,复用沙箱里上次保存的 <name>.cs 原样重跑")] string code = null,
 		[Description("可选:C# 源码文件全路径(长脚本强烈推荐:免 JSON 转义,改文件后重调本工具即重跑)。优先于 code。默认允许任意本地可读 .cs 绝对路径;设环境变量 SE_MCP_SCRIPT_ALLOW_FILE=0 则收紧为只允许沙箱内的 <name>.cs")] string filePath = null,
-		[Description("运行超时秒数,默认 60,上限 600。超时强杀进程树并在结果里如实报告")] int timeoutSec = 60)
+		[Description("运行超时秒数,默认 60,上限 600。超时强杀进程树并在结果里如实报告")] int timeoutSec = 60,
+		[Description("可选:传给脚本 Main(string[] args) 的参数,如 [\"same=1\",\"out=C:\\\\x.csv\"]")] string[] scriptArgs = null)
 	{
 		// ---- 护栏:名称校验 ----
 		if (string.IsNullOrWhiteSpace(name))
@@ -208,7 +209,7 @@ public static class ScriptTools
 		string fullStderr = "";
 		try
 		{
-			var runResult = context.Invoke(() => RunScriptExe(context, exePath, TimeSpan.FromSeconds(timeoutSec)));
+			var runResult = context.Invoke(() => RunScriptExe(context, exePath, TimeSpan.FromSeconds(timeoutSec), scriptArgs));
 			stdout = runResult.Stdout;
 			stderr = runResult.Stderr;
 			status = runResult.TimedOut ? "timeout" : "ok";
@@ -383,12 +384,14 @@ public static class ScriptTools
 	}
 
 	/// <summary>运行脚本 exe:异步读输出防管道死锁,超时强杀整个进程树。须在 STA 线程上调用(context.Invoke 内)。</summary>
-	private static ScriptRunResult RunScriptExe(SolidEdgeContext context, string exePath, TimeSpan timeout)
+	private static ScriptRunResult RunScriptExe(SolidEdgeContext context, string exePath, TimeSpan timeout, string[] scriptArgs = null)
 	{
 		var result = new ScriptRunResult();
 		var psi = new ProcessStartInfo
 		{
 			FileName = exePath,
+			// 脚本参数按 Windows 规则逐个加引号,支持带空格的路径/值
+			Arguments = scriptArgs == null || scriptArgs.Length == 0 ? "" : JoinScriptArgs(scriptArgs),
 			UseShellExecute = false,
 			RedirectStandardOutput = true,
 			RedirectStandardError = true,
@@ -450,6 +453,32 @@ public static class ScriptTools
 			}
 		}
 		return result;
+	}
+
+	/// <summary>拼接脚本参数,按 Windows 命令行规则给含空格/制表/引号的参数加引号(反斜杠转义)。</summary>
+	private static string JoinScriptArgs(string[] args)
+	{
+		var sb = new StringBuilder();
+		foreach (var a in args)
+		{
+			if (sb.Length > 0) sb.Append(' ');
+			if (a.Length == 0 || a.IndexOfAny(new[] { ' ', '\t', '"' }) < 0)
+			{
+				sb.Append(a);
+				continue;
+			}
+			sb.Append('"');
+			for (int i = 0; i < a.Length; i++)
+			{
+				int backslashes = 0;
+				while (i < a.Length && a[i] == '\\') { backslashes++; i++; }
+				if (i == a.Length) { sb.Append('\\', backslashes * 2); break; }
+				if (a[i] == '"') sb.Append('\\', backslashes * 2 + 1).Append('"');
+				else sb.Append('\\', backslashes).Append(a[i]);
+			}
+			sb.Append('"');
+		}
+		return sb.ToString();
 	}
 
 	/// <summary>同步跑一个外部命令并捕获输出(用于 csc 编译)。返回合并后的输出。</summary>

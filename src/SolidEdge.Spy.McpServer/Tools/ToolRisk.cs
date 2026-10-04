@@ -29,7 +29,7 @@ internal enum RiskTier
 
 /// <summary>
 /// 权限洋葱外层:工具名 → 风险档位 的静态登记表 + 模式门禁。
-/// - 三种模式:readonly(只放 Read 档)/ engineer(机械工程师:工具档全放,自由调用通道限 get 前缀成员)/ full(全放)。
+/// - 三种模式:readonly(只放 Read 档)/ engineer(机械工程师:工具档全放,自由调用通道限读取类成员+安全落盘 SaveAs/Save)/ full(全放)。
 ///   模式由环境变量决定,进程启动时 Configure 一次:
 ///   SE_MCP_MODE=readonly|engineer|full;旧 SE_MCP_READONLY=1 兼容映射 readonly;SE_MCP_MODE 给了未识别值则 fail-closed 按只读。
 /// - fail-closed:未登记的工具名一律拒绝(防新工具漏登记直接裸奔)。
@@ -117,11 +117,22 @@ internal static class ToolRisk
 	}
 
 	/// <summary>
-	/// engineer 模式的成员级白名单:仅对自由调用通道(se_invoke_member/se_invoke_chain)生效,
-	/// 成员名须以 "get" 开头(忽略大小写,覆盖 GetXxx / get_xxx 两类 SE 读取 API);
+	/// engineer 模式的成员级白名单:仅对自由调用通道(se_invoke_member/se_invoke_chain)生效。
+	/// 分级依据是【风险】而不是名字前缀(2026-09-29 整改):
+	///   - 读取类:名字以 "get" 开头(忽略大小写,覆盖 GetXxx / get_xxx 两类 SE 读取 API);
+	///   - 安全写:SaveAs / Save —— 落盘不改模型树、不产生几何副作用,
+	///     旧规则按前缀一刀切把它们拦死,逼着 AI 写 se_script_run 脚本绕路(合页建模实测踩坑);
+	///     ⚠️ 已知张力(2026-10-01 评审):①"无几何副作用"不等于"无副作用"——SaveAs 可写任意路径、
+	///     覆盖已有文件;②Save 与 se_close_document「永不代存、保存与否由用户决定」的策略取向相左
+	///     (engineer 模式下 AI 显式调 Save 即等于替用户拍板保存)。是否收窄到"当前文档路径/指定导出目录"
+	///     属产品取舍,待用户拍板(见 PENDING),当前维持放行。
+	///   - 其余一切写操作(建特征/删特征/改属性)工程师模式仍拒绝,建模走声明式工具。
 	/// 其余模式/其余工具一律放行(返回 null)。
 	/// 配方(se_recipe_run)内部步骤不在此过滤——配方是预审过的打包件,走工具级门禁。
 	/// </summary>
+	private static readonly HashSet<string> EngineerSafeWriteMembers =
+		new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "SaveAs", "Save" };
+
 	internal static string CheckMember(string tool, string member)
 	{
 		if (Mode != McpMode.Engineer || member == null)
@@ -132,11 +143,16 @@ internal static class ToolRisk
 		{
 			return null;
 		}
-		if (member.TrimStart().StartsWith("get", StringComparison.OrdinalIgnoreCase))
+		string m = member.Trim();
+		if (m.StartsWith("get", StringComparison.OrdinalIgnoreCase)
+			|| EngineerSafeWriteMembers.Contains(m))
 		{
 			return null;
 		}
-		return "已拒绝:机械工程师模式下," + tool + " 只允许调用名字以 \"get\" 开头的读取类成员,'" + member.Trim() + "' 不符合。建模请走 se_model_build / se_extrude_on_face / se_recipe_run,探索请走 se_walk_object / se_describe_object;如需任意成员调用,请把 MCP 配置里 SE_MCP_MODE 改为 full 后重启会话重载。";
+		return "已拒绝:机械工程师模式下," + tool + " 只允许调用读取类成员(名字以 \"get\" 开头)或安全落盘成员("
+			+ string.Join("/", EngineerSafeWriteMembers) + "),'" + member.Trim() + "' 不符合。"
+			+ "建模请走 se_model_build / se_extrude_on_face / se_recipe_run,探索请走 se_walk_object / se_describe_object;"
+			+ "如需任意成员调用,请把 MCP 配置里 SE_MCP_MODE 改为 full 后重启会话重载。";
 	}
 
 	internal static string DescribeTier(RiskTier tier)

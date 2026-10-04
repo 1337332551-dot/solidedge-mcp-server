@@ -274,6 +274,35 @@ namespace SolidEdge.Spy.InteropServices
         public System.Runtime.InteropServices.ComTypes.ELEMDESC ELEMDESC { get { return _elemDesc; } }
         public System.Runtime.InteropServices.VarEnum VariantType { get { return (System.Runtime.InteropServices.VarEnum)_elemDesc.tdesc.vt; } }
 
+        /// <summary>
+        /// 剥掉 VT_PTR 包装后的实际变体类型。typelib 常把 SAFEARRAY(double)* 表示成
+        /// VT_PTR → lptdesc → VT_ARRAY|VT_R8,而 VariantType 只暴露最外层 tdesc.vt(VT_PTR),
+        /// 解一层 lptdesc 才能看到数组标记。
+        /// </summary>
+        public System.Runtime.InteropServices.VarEnum EffectiveVarType
+        {
+            get
+            {
+                try
+                {
+                    System.Runtime.InteropServices.ComTypes.TYPEDESC tdesc = _elemDesc.tdesc;
+                    System.Runtime.InteropServices.VarEnum vt = (System.Runtime.InteropServices.VarEnum)tdesc.vt;
+                    int depth = 0;
+                    while (vt == System.Runtime.InteropServices.VarEnum.VT_PTR && tdesc.lpValue != IntPtr.Zero && depth < 2)
+                    {
+                        tdesc = (System.Runtime.InteropServices.ComTypes.TYPEDESC)Marshal.PtrToStructure(tdesc.lpValue, typeof(System.Runtime.InteropServices.ComTypes.TYPEDESC));
+                        vt = (System.Runtime.InteropServices.VarEnum)tdesc.vt;
+                        depth++;
+                    }
+                    return vt;
+                }
+                catch
+                {
+                    return VariantType;
+                }
+            }
+        }
+
         public bool IsIn { get { return _elemDesc.desc.paramdesc.wParamFlags.IsSet(System.Runtime.InteropServices.ComTypes.PARAMFLAG.PARAMFLAG_FIN); } }
         public bool IsOut { get { return _elemDesc.desc.paramdesc.wParamFlags.IsSet(System.Runtime.InteropServices.ComTypes.PARAMFLAG.PARAMFLAG_FOUT); } }
         public bool IsLcid { get { return _elemDesc.desc.paramdesc.wParamFlags.IsSet(System.Runtime.InteropServices.ComTypes.PARAMFLAG.PARAMFLAG_FLCID); } }

@@ -68,6 +68,10 @@ namespace SolidEdge.Spy.McpServer.Tools
         ///
         /// 字段说明:
         ///   plane:  "RefPlane_1/2/3"(按名称找默认面) / "@别名"(本批前面 plane 建的面) / "obj-K"(句柄表对象)
+        ///           / "face:<Face.ID>" 或 "face:±X/±Y/±Z"(2026-10-03 面锚定:在已有实体面上加 extrude/cut/hole;
+        ///             坐标模式由 coords 决定:缺省/"global"=全局世界坐标投影(仅轴向面);
+        ///             "local"=该面贴面参考平面的局部 u/v(支持斜面),不投影)
+        ///   coords:  可选,"global"(默认)|"local"(仅 plane 为 face: 时有意义,普通参考平面本来就是局部 u/v)
         ///   side:     ProfilePlaneSide(延伸方向)。extrude 默认 2;cut 默认 1
         ///   profileside: ProfileSide(切除轮廓【内/外】侧)。extrude 默认 1;cut 默认 1(=官方示例 igLeft)
         ///   ★ cut 的"切哪一侧" = side + profileside 共同决定;调用方【没显式给】的维度,
@@ -91,7 +95,7 @@ namespace SolidEdge.Spy.McpServer.Tools
             "pattern 阵列在 SE 2022 COM 不可达(诚实拒绝,多孔阵列改用一个 cut+circles 或 hole+circles)。" +
             "P2 扩 op(多轮廓,均需先有基体特征,首特征通道未开放):" +
             "loft 放样 {op:'loft', profiles:[{plane,形状},...]≥2 项单闭合轮廓, origin?:[u,v] 截面锚点(缺省按形状推导), mode?:'cut'(默认凸台)};" +
-            "sweep 扫掠 {op:'sweep', profiles:[首项=路径,其余=截面]}——路径用 polygon 时按【开放链】解释(≥2 点不闭合),circle/rect/loops 则是闭合路径(扫一整圈);" +
+            "sweep 扫掠 {op:'sweep', profiles:[首项=路径,其余=截面]}——路径用 trace 时按【线段+真圆弧混排】解释,如 trace:[{line:[[x,y],[x,y]]},{arc:{center:[x,y],start:[x,y],end:[x,y]}}](arc 取 start→end 的【劣弧】≤180°,方向由几何自动判定,段间端点须重合;要相切弯头就把圆心放在拐角的对角点,如 R20 从 (0.02,0.03) 转到 (0.04,0.05) 时 center=[0.04,0.03]),polygon 加 fillet:R 时按【顶点链自动倒圆角】展开(圆心/切点由几何算出,必然与直段相切——弯头首选,如 polygon:[[0,0],[0,0.05],[0.06,0.05]],fillet:0.02),否则按【开放链】折线解释(≥2 点不闭合),circle/rect/loops 是闭合路径(扫一整圈);" +
             "helix 螺旋 {op:'helix', plane, 单闭合截面, axis(同 revolve 的两点轴), pitch/height/revolutions 三给二(螺距m/高度m/圈数,第三个由SE推导), mode?:'cut'}。" +
             "plane 局部参考面 {op:'plane', name:'别名', base:'RefPlane_1/2/3'或'@别名', distance:偏移米}——base+distance 建平行偏置面(省 distance=与 base 重合),后续特征用 plane:'@别名' 引用;" +
             "features 每项 {op, name?, plane|base, 形状, side, profileside, depth, axis?, angle?|degrees?, visible?}。" +
@@ -107,16 +111,32 @@ namespace SolidEdge.Spy.McpServer.Tools
             "circles 多真圆(写 [[x,y,r],[x,y,r],...],一个轮廓多环、一次切出多个真圆孔,如法兰螺栓孔阵列)、" +
             "slot 腰孔/长圆孔({\"center\":[x,y],\"length\":总长,\"width\":宽,\"angle\":弧度?} 或简写 [x,y,长,宽];" +
             "【真圆弧】构造,两端是半圆不是折线)、" +
-            "rect 两角点矩形、polygon 多边形点列、loops 多环。plane 支持 RefPlane_1/2/3、@别名(前面 plane op 建的)、obj-K。" +
+            "rect 两角点矩形(如 [[0,0],[0.1,0.1]])、polygon 多边形点列、loops 多环。" +
+            "★ 形状键平铺在特征对象顶层(无 shape 包装——嵌套 shape:{...} 是 se_extrude_on_face 的写法,勿串味)。" +
+            "plane 支持 RefPlane_1/2/3、@别名(前面 plane op 建的)、obj-K、face:<Face.ID>(如 \"face:26\")或轴向选择器 face:±X/±Y/±Z。" +
+            "★ face 锚定(2026-10-03):在已有实体面上加 extrude/cut/hole 时,plane 直接写该面的 Face.ID(或 face:+Z 这类选择器);" +
+            "坐标模式由可选字段 coords 决定(2026-10-04):缺省/\"global\"=轮廓按【全局世界坐标】解释——外法向轴 Z→(X,Y)、X→(Y,Z)、Y→(X,Z)," +
+            "工具内部建一张贴面的隐藏参考平面并投影到它的局部 u/v(仅支持轴向面,斜面报错指路 coords:\"local\");" +
+            "\"local\"=轮廓按【该面贴面参考平面的局部 u/v】直接画,不投影,支持任意平面面(含斜面);" +
+            "local 的原点/轴向由 SE 决定(常见为面中心),建议先 se_read_geometry 读该面边界坐标再写轮廓;" +
+            "local 模式下 slot 也可用(global 模式 slot 的 angle 语义未定,仍拒绝)。" +
+            "face:±Z 按外法向朝向选面(同向有多个面时报错并列出候选 Face.ID,请改用 face:<ID>)。" +
             "★ 参数化(可选,仅 rect/polygon/loops 直线环生效——圆/腰孔轮廓会忽略并回传 warnings):" +
             "autoconstraint=true 按坐标自动补水平/垂直约束;fixorigin=true 固定首环首线起点(消平移自由度);" +
             "dims=[{\"element\":0,\"name\":\"Len1\",\"value\":\"40 mm\"}] 给直线加长度标注并把它变成变量" +
             "(element 为跨环扁平 0-based 线索引,轴不占位;也可用 \"formula\":\"Rad1 - 5 mm\" 建关联式)。" +
             "内部自动完成 画轮廓→端点闭合约束(仅直线需要/圆不需要)→End(0)→可见性隐藏→AddThroughNext/AddFinite 全链路," +
             "cut 方向由 side(ProfilePlaneSide=延伸方向) 与 profileside(ProfileSide=切轮廓内/外侧,默认 1) 共同决定:" +
-            "调用方没显式给的维度,op 会自动按组合重试到几何正常;替代手工拼 se_invoke_chain 长链。示例见 ModelingTools.cs 类注释。" +
+            "调用方没显式给的维度,op 会自动按组合重试到几何正常;替代手工拼 se_invoke_chain 长链。" +
             "★ 执行前会先跑静态校验(见 se_validate_features):有 error 时直接拒绝执行并返回 issues;" +
-            "dryRun=true 则只返回校验报告、不建任何特征。建议先跑一次校验再建。")]
+            "dryRun=true 则只返回校验报告、不建任何特征。建议先跑一次校验再建。" +
+            "★ 显式方向(2026-09-29,extrude/cut/hole 可选):dir=[dx,dy,dz] 世界坐标方向向量——" +
+            "给了 dir 且未给 side 时,按平面带符号法向 dot 直接换算 side(RefPlane_1=+Z、RefPlane_2=+X、RefPlane_3=−Y," +
+            "plane op 派生面继承基准面),结果回传 warnings 里带 dot 值可核对;dir 换算出的 side 不再被方向自愈改写。" +
+            "★ 体积对账(2026-09-29,extrude/cut/hole 可选):expectvolumedelta=声明本特征应造成的模型体积增量(毫米³," +
+            "数字或 [下限,上限],extrude 为正、cut/hole 为负),建完即读实际增量核对,越界自动回滚该特征并返回实际 vs 预期——" +
+            "这是 mode 被截断(如 through_next 只切到一半)、depth 给错这类\"Status 正常但几何不对\"问题的当轮拦截手段;" +
+            "结果 resolved 里附 volumeDeltaMm3 供自行核对。")]
         public static string se_model_build(
             SolidEdgeContext context,
             [Description("特征列表(JSON 数组),每项见工具描述")] JsonElement[] features,
@@ -179,10 +199,25 @@ namespace SolidEdge.Spy.McpServer.Tools
 
                     // 本批内命名局部参考面:name → RefPlane COM 对象
                     var namedPlanes = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                    // 2026-09-29:平面带符号法向登记(平面引用名 → 单位法向 [nx,ny,nz],世界坐标)。
+                    // 来源与符号约定(2026-09-28 挤出探针实测):ProfilePlaneSide=2 沿"平面自身坐标系的 +w",
+                    // 三基准面实测 = RefPlane_1→+Z、RefPlane_2→+X、RefPlane_3→−Y;
+                    // plane op 派生面(CreatePlaneOp)继承基准面法向。dir 字段用它 dot 求符号换算 side。
+                    var planeNormals = new Dictionary<string, double[]>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["RefPlane_1"] = new[] { 0.0, 0.0, 1.0 },
+                        ["RefPlane_2"] = new[] { 1.0, 0.0, 0.0 },
+                        ["RefPlane_3"] = new[] { 0.0, 0.0, -1.0 }
+                    };
                     // P3:本批内命名特征:name → 特征 COM 对象(供 faceOf @别名 引用产出面)
                     var namedFeatures = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
                     // P3.4:extrude_surface 产物面缓存:name → 曲面体面列表(AddFinite 返回对象与 Constructions.Item 不同 RCW,按名缓存最稳)
                     var surfaceFaces = new Dictionary<string, List<object>>(StringComparer.OrdinalIgnoreCase);
+                    // 2026-10-03:face 平面缓存(Face.ID → 贴面隐藏 RefPlane)。同一张面被多个特征引用时只建一张,
+                    // 避免模型树堆一串无名 RefPlane。特征失败回滚时,只清掉"本次特征新建"的那些。
+                    var facePlanes = new Dictionary<int, object>();
+                    // 2026-10-03:face 平面相关的非致命提示(临时对象清理失败 / 孤儿平面删除失败),不阻断建模。
+                    var batchWarnings = new List<string>();
                     var results = new List<object>();
 
                     // 统一走 FeatureSpec 解析:构建器与静态校验器(FeatureValidator)共用同一份取数语义,
@@ -198,21 +233,23 @@ namespace SolidEdge.Spy.McpServer.Tools
                         string name = spec.Name;
 
                         object result;
+                        // 2026-10-03:face 平面回滚基线——本次特征执行前已缓存的 Face.ID。
+                        var faceKeysBefore = new List<int>(facePlanes.Keys);
                         try
                         {
                             switch (spec.OpLower)
                             {
                                 case "plane":
-                                    result = CreatePlaneOp(context, doc, spec, name, namedPlanes);
+                                    result = CreatePlaneOp(context, doc, spec, name, namedPlanes, planeNormals);
                                     break;
                                 case "extrude":
-                                    result = ExtrudeOp(context, doc, spec, name, namedPlanes);
+                                    result = ExtrudeOp(context, doc, spec, name, namedPlanes, planeNormals, facePlanes);
                                     break;
                                 case "cut":
-                                    result = CutOp(context, doc, spec, name, namedPlanes);
+                                    result = CutOp(context, doc, spec, name, namedPlanes, planeNormals, facePlanes);
                                     break;
                                 case "hole":
-                                    result = HoleOp(context, doc, spec, name, namedPlanes);
+                                    result = HoleOp(context, doc, spec, name, namedPlanes, planeNormals, facePlanes);
                                     break;
                                 case "revolve":
                                     result = RevolveOp(context, doc, spec, name, namedPlanes);
@@ -268,6 +305,18 @@ namespace SolidEdge.Spy.McpServer.Tools
                         }
 
                         results.Add(result);
+
+                        // 2026-10-03:face 平面回滚——特征没建成时,清掉本次为它新建的贴面参考平面
+                        // (基线里已有=缓存复用,别的特征还要用,不删)。删除失败只记提示,不阻断。
+                        if (!IsOk(result) && facePlanes.Count > 0)
+                        {
+                            foreach (int fid in new List<int>(facePlanes.Keys))
+                            {
+                                if (faceKeysBefore.Contains(fid)) continue;
+                                string delErr = TryDeleteFacePlane(facePlanes, fid);
+                                if (delErr != null) batchWarnings.Add(delErr);
+                            }
+                        }
 
                         // P3:成功的特征带 name 时登记到 namedFeatures,供后续 faceOf @别名 引用产出面。
                         // 不改 FeatureResult / 现有 op 签名——通过 result.handle 反查 context 拿 featObj COM 对象。
@@ -331,6 +380,7 @@ namespace SolidEdge.Spy.McpServer.Tools
                             ? "第 " + results.Count + " 个特征未建成(失败特征已自动回滚删除),后续特征已停止执行," +
                               "以免连环失败。请按该条的 diagnosis 修正后重跑。"
                             : null,
+                        warnings = batchWarnings.Count > 0 ? batchWarnings : null,
                         results = results
                     });
                 });
@@ -370,17 +420,20 @@ namespace SolidEdge.Spy.McpServer.Tools
         }
 
         /// <summary>
-        /// 按面 ID 定位到一个面,并直接在该实体的面上做拉伸(凸台)——不新建参考平面。
+        /// 按面 ID 定位到一个面,并在该实体面上做拉伸(凸台)。
         /// 流程:遍历 Model.Body.Shells.Faces 找 Face.ID==faceId 的面 →
-        ///   QI 到强类型 Face → ProfileSets.Add().Profiles.Add(face)(直接在面上建轮廓) →
-        ///   画闭合轮廓(rect/polygon) → Model.ExtrudedProtrusions.AddFinite 拉伸。
-        /// 轮廓坐标是"该面局部坐标系"(平面 u/v),非全局 XYZ。
-        /// 注:Profiles.Add(pRefPlaneDisp) 签名虽叫 refplane,但强类型 Face 可直接传入
-        /// (Solid Edge 内部识别平面面),无需 AddParallelByDistance 建参考平面特征。
+        ///   RefPlanes.AddParallelByDistance(face, 0.0, 1) 建与该面重合的参考平面 →
+        ///   ProfileSets.Add().Profiles.Add(该参考平面) → 画闭合轮廓(rect/polygon) →
+        ///   Model.ExtrudedProtrusions.AddFinite(profile, profileSide, planeSide, depth) 拉伸(★4 参数)。
+        /// 轮廓坐标是"该面局部坐标系"(参考平面 u/v),非全局 XYZ —— 真机实测原点在【面中心】,
+        /// 且 v 轴常与全局反向(底面 rect v∈[0.02,0.06] 落在 y∈[-0.01,0.03])。
+        /// 2026-10-03 真机更正:此前依赖 Sketches.AddByPlanarFace(Face),本机 SE2022 抛 0x80004021(操作不被支持),
+        /// 回退 AddByPlane(Face) 又必然 E_NOINTERFACE(该 API 只收 RefPlane)—— 该工具此前从未成功过。
+        /// 副作用:模型树会多一个隐藏的无名参考平面(Name=null)。
         /// </summary>
-        [McpServerTool, Description("按面 ID 定位面并直接在该实体面上做拉伸凸台(不新建参考平面)。" +
+        [McpServerTool, Description("按面 ID 定位面并在该实体面上做拉伸凸台(内部建一个与面重合的隐藏参考平面,模型树会留一个无名 RefPlane)。" +
             "输入 faceId(Face.ID,整数)、轮廓 rect(两角点)/polygon(≥3点,单位米,为该面局部坐标系 u/v)、" +
-            "depth(拉伸深度米)、side(方向,默认2)、profileside(默认1)。内部自动:找面→直接在面上建轮廓→拉伸。" +
+            "depth(拉伸深度米)、side(方向,默认2)、profileside(默认1)。内部自动:找面→建贴面参考平面→画轮廓→拉伸。" +
             "返回新特征名称/Status(1216476310=正常,1216476311=几何未生成)/面数。")]
         public static string se_extrude_on_face(
             SolidEdgeContext context,
@@ -430,15 +483,12 @@ namespace SolidEdge.Spy.McpServer.Tools
                     if (targetFace == null)
                         return Error("未找到 Face.ID=" + faceId + " 的面(当前共 " + faceCount + " 个面)。");
 
-                    // 2) QI 到强类型 Face 接口(Profiles.Add 需要强类型才能识别为平面面)
-                    var iFace = (SolidEdgeGeometry.Face)targetFace;
-
-                    // 3) 解析轮廓
+                    // 2) 解析轮廓
                     JsonElement feat = JsonDocument.Parse(shape).RootElement;
                     List<double[][]> loops = FeatureSpecParser.ParseLoops(feat);
 
-                    // 4) 直接在面上建闭合轮廓(不新建参考平面)+ 拉伸
-                    object profile = CreateProfileOnFace(doc, iFace, loops);
+                    // 3) 在"与该面重合的参考平面"上建闭合轮廓,再拉伸
+                    object profile = CreateProfileOnFace(doc, targetFace, loops);
                     object extrudes = Get(model, "ExtrudedProtrusions");
                     object featObj = Call(extrudes, "AddFinite", new object[] { profile, profileside, side, depth });
 
@@ -462,24 +512,21 @@ namespace SolidEdge.Spy.McpServer.Tools
         }
 
         /// <summary>
-        /// 直接在实体的面上建草图轮廓(不新建独立参考平面):用 Sketches.AddByPlanarFace(强类型 Face)
-        /// 在面上直接建 Sketch,取其 Profile 画闭合轮廓→End。Solid Edge 交互"选面拉伸"即此内部机制,
-        /// 生成的平面是隐藏的基于面关联平面(Type=732824896),不出现独立基准面特征。
+        /// 建"与实体面重合的参考平面"上的草图轮廓。SE2022 无"直接在面上建草图"通路
+        /// (Sketches.AddByPlanarFace 抛 0x80004021;AddByPlane/Profiles.Add 只收 RefPlane),
+        /// 故走已验证通路:RefPlanes.AddParallelByDistance(face, 0.0, 1) → ProfileSets.Add().Profiles.Add(rp)。
+        /// 副作用:模型树多一个隐藏的无名参考平面(Name=null)。
         /// </summary>
-        private static object CreateProfileOnFace(object doc, SolidEdgeGeometry.Face face, List<double[][]> loops)
+        private static object CreateProfileOnFace(object doc, object face, List<double[][]> loops)
         {
-            object sketches = Get(doc, "Sketches");
-            var iSketches = (SolidEdgePart.Sketchs)sketches;   // interop 类型名是 Sketchs(注意拼写)
-            object sketch;
-            try
-            {
-                sketch = iSketches.AddByPlanarFace(face);   // 优先:在面上直接建草图
-            }
-            catch
-            {
-                sketch = iSketches.AddByPlane(face);        // 回退:AddByPlane 可能也接受面
-            }
-            object profile = Get(sketch, "Profile");
+            object refPlanes = Get(doc, "RefPlanes");
+            object newPlane = Call(refPlanes, "AddParallelByDistance", new object[] { face, 0.0, 1 });
+            SetVisible(newPlane, false);
+
+            object profileSets = Get(doc, "ProfileSets");
+            object profileSet = Call(profileSets, "Add", new object[0]);
+            object profiles = Get(profileSet, "Profiles");
+            object profile = Call(profiles, "Add", new object[] { newPlane });
 
             object lines = Get(profile, "Lines2d");
             object relations = Get(profile, "Relations2d");
@@ -507,8 +554,121 @@ namespace SolidEdge.Spy.McpServer.Tools
 
         // ---------------- op 实现 ----------------
 
+        /// <summary>
+        /// 2026-09-29:按 dir(世界坐标方向向量)解析 ProfilePlaneSide。
+        /// 规则:side = dot(dir, 平面带符号法向) > 0 ? 2 : 1(ProfilePlaneSide=2 沿平面自身 +w,
+        /// 三基准面/派生面的带符号法向登记在 planeNormals,来源见主循环注释)。
+        /// 优先级:显式 side &gt; dir &gt; op 默认;显式 side 与 dir 同时给且矛盾时报 warning(听 side 的)。
+        /// planeNormals 查不到该面(如 obj-K 引用的外部面)时回退 opDefault 并带 warning。
+        /// </summary>
+        private static int ResolveSideByDir(FeatureSpec spec, Dictionary<string, double[]> planeNormals,
+            int opDefault, List<string> warnings, string opLabel)
+        {
+            if (spec.Side.HasValue)
+            {
+                if (spec.HasDir)
+                    warnings.Add(opLabel + " 同时给了 side=" + spec.Side.Value + " 和 dir,已按显式 side 执行(dir 仅记录)——两者应只给其一。");
+                return spec.Side.Value;
+            }
+            if (!spec.HasDir)
+                return opDefault;
+
+            if (spec.DirParseError != null)
+            {
+                warnings.Add(opLabel + " dir 未生效:" + spec.DirParseError + "。已回退默认 side=" + opDefault + "。");
+                return opDefault;
+            }
+
+            if (spec.PlaneRef != null && planeNormals.TryGetValue(spec.PlaneRef, out double[] n) && n != null)
+            {
+                double dot = spec.Dir[0] * n[0] + spec.Dir[1] * n[1] + spec.Dir[2] * n[2];
+                if (Math.Abs(dot) < 1e-9)
+                {
+                    // dir 落在平面内(与法向垂直):"朝平面哪一侧"根本未定义,给 side=1 只是假确定性。
+                    // 诚实做法 = 视同 dir 不生效,回退默认并说明。
+                    warnings.Add(opLabel + " dir 未生效:dir 与平面 \"" + spec.PlaneRef + "\" 平行(dot=0),方向未定义。已回退默认 side=" + opDefault + "。");
+                    return opDefault;
+                }
+                int side = dot > 0 ? 2 : 1;
+                warnings.Add("dir=[" + spec.Dir[0].ToString("0.##") + "," + spec.Dir[1].ToString("0.##") + ","
+                    + spec.Dir[2].ToString("0.##") + "] × " + spec.PlaneRef + " 法向=["
+                    + n[0].ToString("0.##") + "," + n[1].ToString("0.##") + "," + n[2].ToString("0.##")
+                    + "] → dot=" + dot.ToString("0.###") + " → side=" + side + "(显式方向,未经自动重试)。");
+                return side;
+            }
+
+            warnings.Add(opLabel + " dir 未生效:平面 \"" + spec.PlaneRef + "\" 的带符号法向未知(仅 RefPlane_1/2/3 与本批 plane op 派生面可解析)。已回退默认 side=" + opDefault + "。");
+            return opDefault;
+        }
+
+        /// <summary>
+        /// 2026-09-29:读 Model 实体体积(米³)。走 IDispatch 读 Body.Volume(与 inspect_faces 脚本同通道,实测可靠)。
+        /// 无模型时返回 0(首特征前体积为零);读不到返回 null,调用方跳过体积对账。
+        /// </summary>
+        private static double? TryModelVolume(object doc)
+        {
+            try
+            {
+                object models = Get(doc, "Models");
+                if (Count(models) == 0) return 0.0;
+                object bodyObj = Get(Get(models, "Item", 1), "Body");
+                if (bodyObj == null) return null;
+                object v = Get(bodyObj, "Volume");
+                return Convert.ToDouble(v);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 2026-09-29:体积对账。caller 通过 expectvolumedelta(毫米³,数字或 [下限,上限])声明本特征
+        /// 应造成的模型体积增量区间;不符 → 删特征+草图并返回 error 结果(实际 vs 预期)。
+        /// 返回 null = 对账通过(或无法校验,带 warning);非 null = 已回滚的 error 结果。
+        /// </summary>
+        private static object CheckVolumeExpectation(object doc, FeatureSpec spec, object profile, object featObj,
+            double? v0, double? v1, string opLabel, string name, object resolved, List<string> warnings)
+        {
+            double deltaMm3 = (v0.HasValue && v1.HasValue) ? (v1.Value - v0.Value) * 1e9 : double.NaN;
+            if (!spec.HasExpectVol)
+                return null;
+            if (spec.ExpectVolParseError != null)
+            {
+                // 声明了却解析不出来 = 无法核对设计意图:按 error 处理,且必须【一并回滚】——
+                // 只报 error 不回滚会把特征留在模型里,调用方按 error 语义重试就出重复特征。
+                // (正常路径下 FeatureRules 的 E418 已在建前拦住,这里是纵深防御。)
+                DiscardCutCandidate(profile, featObj);
+                return new { op = opLabel, name, status = "error", resolved, message = opLabel + " expectvolumedelta 未生效:" + spec.ExpectVolParseError + ",特征已回滚。" };
+            }
+            if (double.IsNaN(deltaMm3))
+            {
+                // 体积读不到,无法对账:诚实放行但明确说明(宁可漏判不误删调用方合法特征)
+                if (warnings != null)
+                    warnings.Add(opLabel + " 已声明 expectvolumedelta,但读不到模型体积,本条【跳过体积对账】(无法核对,不误删特征)。");
+                return null;
+            }
+            bool ok = deltaMm3 >= spec.ExpectVolMin.Value && deltaMm3 <= spec.ExpectVolMax.Value;
+            if (ok)
+                return null;
+
+            DiscardCutCandidate(profile, featObj);
+            return new
+            {
+                op = opLabel,
+                name,
+                status = "error",
+                resolved,
+                message = opLabel + " 体积对账失败:实际体积增量 " + deltaMm3.ToString("F1") + " mm³ 不在声明区间 ["
+                    + spec.ExpectVolMin.Value.ToString("F1") + ", " + spec.ExpectVolMax.Value.ToString("F1")
+                    + "] 内,特征已回滚。典型原因:cut 的 mode/方向与预期不符(如 through_next 被截断)、depth 给错。",
+                diagnosis = "声明 expectvolumedelta 后构建器会在回滚前用实际体积核对设计意图——本条拦截说明几何结果与声明不符,请核对 mode/side/depth。",
+                fix = new { action = "fix_and_retry", check = new[] { "mode", "side/dir", "depth" } }
+            };
+        }
+
         private static object CreatePlaneOp(SolidEdgeContext context, object doc, FeatureSpec spec, string name,
-            Dictionary<string, object> namedPlanes)
+            Dictionary<string, object> namedPlanes, Dictionary<string, double[]> planeNormals)
         {
             object basePlane = ResolvePlane(context, doc, spec.BaseRef, namedPlanes);
             double distance = spec.Distance;
@@ -520,7 +680,13 @@ namespace SolidEdge.Spy.McpServer.Tools
             SetVisible(plane, spec.Visible ?? false);
 
             string handleId = context.AddHandle(plane, "RefPlane", SafeString(Get(plane, "DisplayName")) ?? "(局部面)");
-            if (!string.IsNullOrEmpty(name)) namedPlanes[name] = plane;
+            if (!string.IsNullOrEmpty(name))
+            {
+                namedPlanes[name] = plane;
+                // 派生面法向继承基准面(AddParallelByDistance 沿基准面法向偏移,法向方向不变);
+                // 基准面法向未知时登记 null 占位,后续 dir 查询走"法向未知"回退而不是误用别的面。
+                planeNormals[name] = (spec.BaseRef != null && planeNormals.TryGetValue(spec.BaseRef, out double[] bn)) ? bn : null;
+            }
 
             return new
             {
@@ -535,14 +701,15 @@ namespace SolidEdge.Spy.McpServer.Tools
         }
 
         private static object ExtrudeOp(SolidEdgeContext context, object doc, FeatureSpec spec, string name,
-            Dictionary<string, object> namedPlanes)
+            Dictionary<string, object> namedPlanes, Dictionary<string, double[]> planeNormals,
+            Dictionary<int, object> facePlanes = null)
         {
-            object plane = ResolvePlane(context, doc, spec.PlaneRef, namedPlanes);
+            object plane = ResolvePlane(context, doc, spec.PlaneRef, namedPlanes, facePlanes, spec.CoordsLocal);
             bool visible = spec.Visible ?? false;
 
             var specWarnings = new List<string>();
             object profile = CreateProfileForFeature(context, doc, plane, spec, visible, specWarnings);
-            int side = spec.Side ?? 2;                           // ProfilePlaneSide
+            int side = ResolveSideByDir(spec, planeNormals, 2, specWarnings, "extrude");   // ProfilePlaneSide
             int profileSide = spec.ProfileSide ?? 1;             // ProfileSide
             double depth = spec.Depth ?? double.NaN;
             if (double.IsNaN(depth))
@@ -550,6 +717,7 @@ namespace SolidEdge.Spy.McpServer.Tools
 
             object models = Get(doc, "Models");
             int modelCount = Count(models);
+            double? v0 = TryModelVolume(doc);
 
             object featObj;
             if (modelCount == 0)
@@ -577,24 +745,42 @@ namespace SolidEdge.Spy.McpServer.Tools
                 featObj = Call(extrudes, "AddFinite", new object[] { profile, profileSide, side, depth });
             }
 
+            double? v1 = TryModelVolume(doc);
+            double deltaMm3 = (v0.HasValue && v1.HasValue) ? (v1.Value - v0.Value) * 1e9 : double.NaN;
+            var volFail = CheckVolumeExpectation(doc, spec, profile, featObj, v0, v1, "extrude", name, null, specWarnings);
+            if (volFail != null)
+                return volFail;
+
             return FeatureResult("extrude", name, featObj, context, profile, null, specWarnings,
-                new { plane = spec.PlaneRef, side = side, profileside = profileSide, depth = depth });
+                new
+                {
+                    plane = spec.PlaneRef,
+                    side = side,
+                    profileside = profileSide,
+                    depth = depth,
+                    dir = spec.HasDir ? spec.Dir : null,
+                    volumeDeltaMm3 = deltaMm3.Equals(double.NaN) ? (double?)null : deltaMm3
+                });
         }
 
         // opLabel:返回结果里的 op 名(hole 复用本管线时传 "hole",其余用默认 "cut")。
         private static object CutOp(SolidEdgeContext context, object doc, FeatureSpec spec, string name,
-            Dictionary<string, object> namedPlanes, string opLabel = "cut")
+            Dictionary<string, object> namedPlanes, Dictionary<string, double[]> planeNormals,
+            Dictionary<int, object> facePlanes = null, string opLabel = "cut")
         {
             // 中文称呼:报错文案随入口语义变化(除料 / 打孔)
             string kindCn = opLabel == "hole" ? "打孔" : "除料";
 
-            object plane = ResolvePlane(context, doc, spec.PlaneRef, namedPlanes);
+            object plane = ResolvePlane(context, doc, spec.PlaneRef, namedPlanes, facePlanes, spec.CoordsLocal);
             bool visible = spec.Visible ?? false;
 
             // 多孔(门+多个窗)必须画进【同一个轮廓】的多个闭合环,一次 AddThroughNext 全切;
             // 分开多次 AddThroughNext 时,第二个及以后的除料会 6311 僵尸(实测)。
             int profileSide = spec.ProfileSide ?? 1;             // ProfileSide:1=切除轮廓【内侧】的料(官方示例 igLeft)
-            int planeSide = spec.Side ?? 1;                      // ProfilePlaneSide:相对草图平面的延伸方向
+            var specWarnings = new List<string>();
+            // 2026-09-29:dir 给出时按带符号法向换算 planeSide(等效显式 side,不再参与自动翻转重试);
+            // 未给 dir 且未给 side 时维持旧默认 1 + 方向自愈。
+            int planeSide = ResolveSideByDir(spec, planeNormals, 1, specWarnings, opLabel);
             string mode = spec.Mode ?? "next";
 
             object models = Get(doc, "Models");
@@ -610,10 +796,11 @@ namespace SolidEdge.Spy.McpServer.Tools
             //     ② 包围盒骤缩(见 IsCutSuspicious) = 几何生成了,但把轮廓【外侧】的料整块切掉,
             //        实体只剩一根轮廓柱 —— 即"挖反"。这类失败 Status 完全正常,只看状态码判不出来。
             //   两层都过 = 定案。两个方向都显式给了 = 完全听调用方的,不再猜。
+            //   2026-09-29:dir 换算出的 side 视同显式(ppsFree=false)——方向是算出来的,不该再被自愈改写。
             //   ⚠️ 仍判不了的:两个方向都"切到料且都不缩小包围盒"的合法镜像(如沿轮廓切掉板的一半),
             //      这种情况没有机器可辨的唯一解,只能靠调用方显式给方向或人工目检。
             bool psFree = !spec.ProfileSide.HasValue;
-            bool ppsFree = !spec.Side.HasValue;
+            bool ppsFree = !spec.Side.HasValue && !spec.HasDir;
             int[] psList = psFree ? new[] { profileSide, profileSide == 1 ? 2 : 1 } : new[] { profileSide };
             int[] ppsList = ppsFree ? new[] { planeSide, planeSide == 1 ? 2 : 1 } : new[] { planeSide };
 
@@ -622,8 +809,8 @@ namespace SolidEdge.Spy.McpServer.Tools
             // 判据为什么不用面数:L2 给的 `Body.Faces(FaceType=1).Count` 在圆孔场景不稳定
             // (本构建下"板 + 贯通圆孔"实测 6 面,与纯板相同,面数不增),包围盒则必然变化。
             double[] baseBox = TryModelRangeBox(doc);
+            double? v0 = TryModelVolume(doc);
 
-            var specWarnings = new List<string>();
             object bestProfile = null;
             object bestFeat = null;
             bool bestSuspicious = false;
@@ -682,13 +869,18 @@ namespace SolidEdge.Spy.McpServer.Tools
 
             // resolved:本次【实际生效】的方向。自愈会替调用方改方向,不回传的话调用方
             // 根本不知道最终用了哪一组——"默认值"也就无从核对。
+            // 2026-09-29:附体积对账数据(volumeDeltaMm3 = 实际模型体积增量)。
+            double? v1 = TryModelVolume(doc);
+            double deltaMm3 = (v0.HasValue && v1.HasValue) ? (v1.Value - v0.Value) * 1e9 : double.NaN;
             object cutResolved = new
             {
                 plane = spec.PlaneRef,
                 side = bestPps,
                 profileside = bestPs,
                 mode = mode,
-                depth = string.Equals(mode, "finite", StringComparison.OrdinalIgnoreCase) ? (spec.Depth ?? 0.2) : (double?)null
+                depth = string.Equals(mode, "finite", StringComparison.OrdinalIgnoreCase) ? (spec.Depth ?? 0.2) : (double?)null,
+                dir = spec.HasDir ? spec.Dir : null,
+                volumeDeltaMm3 = deltaMm3.Equals(double.NaN) ? (double?)null : deltaMm3
             };
 
             if (bestFeat == null)
@@ -709,6 +901,13 @@ namespace SolidEdge.Spy.McpServer.Tools
                 };
             }
 
+            // 2026-09-29:体积对账——caller 声明 expectvolumedelta 时,实际增量越界即回滚报错。
+            // ⚠️ 必须排在 bestFeat == null 之后:所有方向组合都出僵尸时模型体积根本没变(delta≈0),
+            //    先跑对账会把"几何压根没生成"误报成"体积对账失败",还跳过上面更准的僵尸诊断。
+            var volFail = CheckVolumeExpectation(doc, spec, bestProfile, bestFeat, v0, v1, opLabel, name, cutResolved, specWarnings);
+            if (volFail != null)
+                return volFail;
+
             if (healed)
                 specWarnings.Add("首次尝试把轮廓【外侧】的料整块切掉(实体被切得只剩轮廓柱、包围盒骤缩)," +
                                  "已自动换方向重试并成功。若要固定方向,请在 features 里显式指定 side / profileside。");
@@ -728,7 +927,8 @@ namespace SolidEdge.Spy.McpServer.Tools
         /// 默认贯穿(through_all → mode="all"),与 cut 的默认 next 不同——孔的心智默认是打穿。
         /// </summary>
         private static object HoleOp(SolidEdgeContext context, object doc, FeatureSpec spec, string name,
-            Dictionary<string, object> namedPlanes)
+            Dictionary<string, object> namedPlanes, Dictionary<string, double[]> planeNormals,
+            Dictionary<int, object> facePlanes = null)
         {
             if (!spec.HasCircle && !spec.HasCircles)
                 return new
@@ -746,7 +946,7 @@ namespace SolidEdge.Spy.McpServer.Tools
             if (mode != "all" && mode != "next" && mode != "finite") mode = "all";
             spec.Mode = mode;
 
-            return CutOp(context, doc, spec, name, namedPlanes, "hole");
+            return CutOp(context, doc, spec, name, namedPlanes, planeNormals, facePlanes, "hole");
         }
 
         /// <summary>按 mode 调对应的除料 API(切穿所有 / 定深 / 切到下一面),供 cut 首次尝试与方向翻转重试共用。</summary>
@@ -1378,6 +1578,17 @@ namespace SolidEdge.Spy.McpServer.Tools
         }
 
         /// <summary>
+        /// 纯平面性判定(2026-10-04):Geometry 强类型 QI 为 Plane 即平面面。
+        /// 与 TryGetFaceNormal 的区别:不看边(带内孔/全曲线边的平面面也算平面),
+        /// 不给方向(coords:"local" 只需要"能不能贴一张平面",不需要法向)。
+        /// </summary>
+        private static bool IsPlanarFace(object face)
+        {
+            try { return ((SolidEdgeGeometry.Face)face).Geometry is SolidEdgeGeometry.Plane; }
+            catch { return false; }
+        }
+
+        /// <summary>
         /// 读平面面的法向(世界系 XYZ)。Vertex 没有直接 x/y/z 属性(SE SDK 实测),
         /// 改走强类型 Edge.GetEndPoints(out StartPoint, out EndPoint)——返回两个 Double[3],
         /// 取前两条不共线边的方向向量叉积得平面法向。失败返回 null(调用方跳过该面)。
@@ -1394,7 +1605,14 @@ namespace SolidEdge.Spy.McpServer.Tools
                 int ec = edges.Count;
                 if (ec < 2) return null;
 
-                double[] dir1 = EdgeDirection(edges.Item(1));
+                // 2026-10-04:dir1 不能只取 Item(1)——带内孔的面(如打了凸台/孔的平面)的边序里
+                // 整圆边可能排第一,退化边返回 null 会把整块判定拖死。跳过退化边找第一条有效方向。
+                double[] dir1 = null;
+                for (int i = 1; i <= ec; i++)
+                {
+                    var d = EdgeDirection(edges.Item(i));
+                    if (d != null) { dir1 = d; break; }
+                }
                 if (dir1 == null) return null;
 
                 // 找第二条不与 dir1 共线的边方向(共线叉积为 0,推不出法向)
@@ -1429,12 +1647,13 @@ namespace SolidEdge.Spy.McpServer.Tools
                 Array endPt = Array.CreateInstance(typeof(double), 0);
                 edge.GetEndPoints(ref startPt, ref endPt);
                 if (startPt == null || endPt == null || startPt.Length < 3 || endPt.Length < 3) return null;
-                return new[]
-                {
-                    Convert.ToDouble(endPt.GetValue(0), CultureInfo.InvariantCulture) - Convert.ToDouble(startPt.GetValue(0), CultureInfo.InvariantCulture),
-                    Convert.ToDouble(endPt.GetValue(1), CultureInfo.InvariantCulture) - Convert.ToDouble(startPt.GetValue(1), CultureInfo.InvariantCulture),
-                    Convert.ToDouble(endPt.GetValue(2), CultureInfo.InvariantCulture) - Convert.ToDouble(startPt.GetValue(2), CultureInfo.InvariantCulture)
-                };
+                double dx = Convert.ToDouble(endPt.GetValue(0), CultureInfo.InvariantCulture) - Convert.ToDouble(startPt.GetValue(0), CultureInfo.InvariantCulture);
+                double dy = Convert.ToDouble(endPt.GetValue(1), CultureInfo.InvariantCulture) - Convert.ToDouble(startPt.GetValue(1), CultureInfo.InvariantCulture);
+                double dz = Convert.ToDouble(endPt.GetValue(2), CultureInfo.InvariantCulture) - Convert.ToDouble(startPt.GetValue(2), CultureInfo.InvariantCulture);
+                // 2026-10-04 真机:整圆边(内孔/圆角)的 start==end,弦向量是零向量;零向量进叉积会把
+                // "平面性/轴向"判定整体污染成 null(零向量与任何边都"共线")。退化边直接按 null 处理。
+                if (dx * dx + dy * dy + dz * dz < 1e-24) return null;
+                return new[] { dx, dy, dz };
             }
             catch { return null; }
         }
@@ -2035,7 +2254,7 @@ namespace SolidEdge.Spy.McpServer.Tools
         }
 
         /// <summary>
-        /// sweep:扫掠凸台(默认)/ 扫掠除料(mode:"cut")。profiles 首项=路径(polygon 按开放链解释),
+        /// sweep:扫掠凸台(默认)/ 扫掠除料(mode:"cut")。profiles 首项=路径(trace 线弧混排 / polygon 开放链),
         /// 其余=截面。SDK 的 15 参 Add:路径在 TraceCurves、截面在 CrossSections【分开传】,
         /// SegmentMaps=0、两端 Extent=igNone(44)/0/null、MaterialSide=igLeft(1)。
         /// </summary>
@@ -2062,7 +2281,9 @@ namespace SolidEdge.Spy.McpServer.Tools
                 bool visible = spec.Visible ?? false;
                 var pathSpec = spec.Profiles[0];
                 object pathPlane = ResolvePlane(context, doc, pathSpec.PlaneRef, namedPlanes);
-                if (pathSpec.OpenChain != null)
+                if (pathSpec.Trace != null)
+                    profiles.Add(CreateProfileTrace(doc, pathPlane, pathSpec.Trace, visible));
+                else if (pathSpec.OpenChain != null)
                     profiles.Add(CreateProfileOpenChain(doc, pathPlane, pathSpec.OpenChain, visible));
                 else
                     profiles.Add(CreateProfileForFeature(context, doc, pathPlane, pathSpec, visible, specWarnings));
@@ -2238,6 +2459,68 @@ namespace SolidEdge.Spy.McpServer.Tools
 
             for (int i = 0; i + 1 < lineObjs.Length; i++)
                 Call(relations, "AddKeypoint", new object[] { lineObjs[i], 1, lineObjs[i + 1], 0 });
+
+            Call(profile, "End", new object[] { 0 });
+            if (!visible) SetVisible(profile, false);
+            return profile;
+        }
+
+        /// <summary>
+        /// 建【线段 + 真圆弧】混排的开放路径草图(sweep 首项 trace 专用,2026-10-04)。
+        /// 与 CreateProfileOpenChain(纯折线)并列:直线走 Lines2d.AddBy2Points,圆弧走
+        /// Arcs2d.AddByCenterStartEnd,段间用 Relations2d.AddKeypoint 端点首尾相接。
+        /// ★ 端点索引按元素类型不同(见 CreateProfileSlot 注释):Line2d 0=起点/1=终点;Arc2d 0=圆心/1=起点/2=终点。
+        /// ★ AddByCenterStartEnd 只能【逆时针】,而弧段语义是"start→end 的劣弧(≤180°)"——
+        ///   若 start→end 的逆时针扫掠角 > 180°,说明要的是顺时针劣弧,此时【交换起终点】调用
+        ///   (同一条圆弧、反向遍历),否则会画出法向相反的大圆弧(2026-10-04 用户实测:右转弯头不相切)。
+        /// </summary>
+        private static object CreateProfileTrace(object doc, object plane, List<PathSegment> segs, bool visible)
+        {
+            object profileSets = Get(doc, "ProfileSets");
+            object profileSet = Call(profileSets, "Add", null);
+            object profiles = Get(profileSet, "Profiles");
+            object profile = Call(profiles, "Add", new object[] { plane });
+
+            object lines = Get(profile, "Lines2d");
+            object arcs = Get(profile, "Arcs2d");
+            object relations = Get(profile, "Relations2d");
+
+            var objs = new List<object>();
+            var startIdx = new List<int>();   // 该段【沿路径流向】起点的关键点索引
+            var endIdx = new List<int>();     // 该段【沿路径流向】终点的关键点索引
+            foreach (var seg in segs)
+            {
+                if (seg.Kind == "arc")
+                {
+                    double a0 = Math.Atan2(seg.P0[1] - seg.Center[1], seg.P0[0] - seg.Center[0]);
+                    double a1 = Math.Atan2(seg.P1[1] - seg.Center[1], seg.P1[0] - seg.Center[0]);
+                    double ccw = a1 - a0;
+                    while (ccw <= 1e-12) ccw += 2.0 * Math.PI;    // 归一化到 (0, 2π]
+                    if (ccw > Math.PI + 1e-9)                     // 逆时针是劣弧 → 交换,走顺时针劣弧
+                    {
+                        objs.Add(Call(arcs, "AddByCenterStartEnd", new object[]
+                            { seg.Center[0], seg.Center[1], seg.P1[0], seg.P1[1], seg.P0[0], seg.P0[1] }));
+                        startIdx.Add(2); endIdx.Add(1);           // 弧自身起点=路径终点,终点=路径起点
+                    }
+                    else
+                    {
+                        objs.Add(Call(arcs, "AddByCenterStartEnd", new object[]
+                            { seg.Center[0], seg.Center[1], seg.P0[0], seg.P0[1], seg.P1[0], seg.P1[1] }));
+                        startIdx.Add(1); endIdx.Add(2);
+                    }
+                }
+                else
+                {
+                    objs.Add(Call(lines, "AddBy2Points",
+                        new object[] { seg.P0[0], seg.P0[1], seg.P1[0], seg.P1[1] }));
+                    startIdx.Add(0); endIdx.Add(1);
+                }
+            }
+
+            // 端点首尾相接:上一段(沿流向)终点 ↔ 下一段(沿流向)起点
+            for (int i = 0; i + 1 < objs.Count; i++)
+                Call(relations, "AddKeypoint",
+                    new object[] { objs[i], endIdx[i], objs[i + 1], startIdx[i + 1] });
 
             Call(profile, "End", new object[] { 0 });
             if (!visible) SetVisible(profile, false);
@@ -2593,6 +2876,13 @@ namespace SolidEdge.Spy.McpServer.Tools
         /// </summary>
         private static object CreateProfileForFeature(SolidEdgeContext context, object doc, object plane, FeatureSpec spec, bool visible, List<string> specWarnings)
         {
+            // 2026-10-03:face 锚定 + coords 缺省/"global" 时,轮廓声明的是【全局世界坐标】,
+            // 先投影成贴面平面的局部 (u,v),再走原有建轮廓路径。
+            // 2026-10-04:coords:"local" 时轮廓本来就是贴面平面的局部 u/v,不走投影分支,
+            // 直接落下面的 circle/circles/slot/Multi 分派(与普通 RefPlane 草图同构,支持斜面)。
+            if (spec.FacePlaneRef != null && !spec.CoordsLocal)
+                return CreateProfileForFace(context, doc, plane, spec, visible, specWarnings);
+
             if (spec.HasCircle)
             {
                 WarnIfDeclarationsIgnored(spec, specWarnings, "circle");
@@ -2616,7 +2906,113 @@ namespace SolidEdge.Spy.McpServer.Tools
             if (spec.ShapeError != null)
                 throw new ArgumentException(spec.ShapeError);
 
-            return CreateProfileMulti(context, doc, plane, spec, visible, specWarnings);
+            return CreateProfileMulti(context, doc, plane, spec, spec.Loops, visible, specWarnings);
+        }
+
+        /// <summary>
+        /// face 平面的轮廓(2026-10-03 IR 面锚定):声明的坐标是【全局世界坐标】,先投影成贴面参考平面的
+        /// 局部 (u,v),再复用原建轮廓路径。
+        /// 世界 2D 语义:外法向轴 Z→(X,Y)、X→(Y,Z)、Y→(X,Z);第三坐标取 0。
+        /// slot 不支持(其 angle 在全局坐标下绕哪个轴未定,coords:"local" 时由 CreateProfileForFeature 分流走普通路径);
+        /// 非轴向面(斜面)由 ResolveFacePlane 建平面前拒绝并指路 coords:"local"。
+        ///
+        /// ★ 2026-10-03 实测修正:投影基必须在本特征【自己的 profile】上求。早先版本为了"不污染"而
+        ///   临时建一个 ProfileSet 求完基再删掉,结果那张贴面 RefPlane 的 RCW 会变 CO_E_OBJNOTCONNECTED,
+        ///   随后的 Profiles.Add(plane) 报 0x800401FD、回滚删平面也一起失败。现改为一次建好 profile,
+        ///   在同一对象上完成"求基 → 画轮廓 → End"。
+        /// </summary>
+        private static object CreateProfileForFace(SolidEdgeContext context, object doc, object plane, FeatureSpec spec, bool visible, List<string> specWarnings)
+        {
+            if (spec.OpLower != "extrude" && spec.OpLower != "cut" && spec.OpLower != "hole")
+                throw new ArgumentException("face 平面本轮只支持 extrude / cut / hole(当前 op=" + spec.OpLower + ")。");
+
+            if (spec.ShapeError != null)
+                throw new ArgumentException(spec.ShapeError);
+
+            if (spec.HasSlot)
+                throw new ArgumentException("face 平面 global 模式不支持 slot(腰孔):其 angle 在全局坐标下绕哪个轴没有定义。" +
+                                            "请改用 \"coords\":\"local\"(坐标为该面局部 u/v,slot 可用)或 polygon/loops。");
+
+            object profileSets = Get(doc, "ProfileSets");
+            object profileSet = Call(profileSets, "Add", null);
+            object profile = Call(Get(profileSet, "Profiles"), "Add", new object[] { plane });
+
+            var map = GeometryTools.FacePlaneMap.BuildFromProfile(profile);
+            if (specWarnings != null)
+            {
+                specWarnings.Add("face 平面:外法向轴 = " + map.NormalAxis + ",轮廓 2D 坐标按全局 (" +
+                                 (map.NormalAxis == "Z" ? "X,Y" : (map.NormalAxis == "X" ? "Y,Z" : "X,Z")) + ") 解释。");
+            }
+
+            if (spec.HasCircle)
+            {
+                WarnIfDeclarationsIgnored(spec, specWarnings, "circle");
+                double[] c = map.Map(spec.CircleX, spec.CircleY);
+                Call(Get(profile, "Circles2d"), "AddByCenterRadius", new object[] { c[0], c[1], spec.CircleR });
+            }
+            else if (spec.HasCircles)
+            {
+                WarnIfDeclarationsIgnored(spec, specWarnings, "circles");
+                object circles2d = Get(profile, "Circles2d");
+                foreach (var cc in spec.Circles)
+                {
+                    double[] c = map.Map(cc[0], cc[1]);
+                    Call(circles2d, "AddByCenterRadius", new object[] { c[0], c[1], cc[2] });
+                }
+            }
+            else
+            {
+                // 直线环:逐点投影 + 绕向归一(面局部坐标基可能是镜像,不归一会出现反绕向轮廓)。
+                // 不改 spec.Loops 本体 —— cut 的方向自愈会对同一 spec 反复建轮廓,改本体等于重复投影。
+                var loops = new List<double[][]>(spec.Loops.Count);
+                foreach (var pts in spec.Loops)
+                {
+                    var mappedPts = new double[pts.Length][];
+                    for (int i = 0; i < pts.Length; i++)
+                    {
+                        double[] uv = map.Map(pts[i][0], pts[i][1]);
+                        mappedPts[i] = new[] { uv[0], uv[1] };
+                    }
+                    if (GeoUtil.SignedArea(mappedPts) < 0) Array.Reverse(mappedPts);
+                    loops.Add(mappedPts);
+                }
+                FillProfileWithLines(context, doc, profile, spec, loops, specWarnings);
+            }
+
+            Call(profile, "End", new object[] { 0 });
+            if (!visible) SetVisible(profile, false);
+            return profile;
+        }
+
+        /// <summary>
+        /// 往【已建好的 profile】里画多个闭合直线环(逐线首尾相连 + 端点重合约束)并应用声明式约束/标注。
+        /// 由 <see cref="CreateProfileMulti"/> 与 face 轮廓共用,避免两份实现漂移。
+        /// </summary>
+        private static void FillProfileWithLines(SolidEdgeContext context, object doc, object profile, FeatureSpec spec,
+            List<double[][]> loops, List<string> specWarnings)
+        {
+            object lines = Get(profile, "Lines2d");
+            object relations = Get(profile, "Relations2d");
+
+            var loopLines = new List<(object line, double[] p0, double[] p1)>();
+            foreach (var pts in loops)
+            {
+                int n = pts.Length;
+                var lineObjs = new object[n];
+                for (int i = 0; i < n; i++)
+                {
+                    var p0 = pts[i];
+                    var p1 = pts[(i + 1) % n];
+                    lineObjs[i] = Call(lines, "AddBy2Points", new object[] { p0[0], p0[1], p1[0], p1[1] });
+                    loopLines.Add((lineObjs[i], p0, p1));
+                }
+                for (int i = 0; i < n; i++)
+                {
+                    Call(relations, "AddKeypoint", new object[] { lineObjs[i], 1, lineObjs[(i + 1) % n], 0 });
+                }
+            }
+
+            ApplySpecConstraints(context, doc, profile, spec, loopLines, specWarnings);
         }
 
         /// <summary>
@@ -2768,35 +3164,14 @@ namespace SolidEdge.Spy.McpServer.Tools
         /// 建内嵌轮廓(支持多环):ProfileSets.Add → Profiles.Add(plane) → 每环逐线 + 端点闭合 → End(0) → 隐藏。
         /// 多孔(门+窗)必须放同一轮廓的多个闭合环里一次切,否则第 2+ 个 AddThroughNext 会 6311 僵尸。
         /// </summary>
-        private static object CreateProfileMulti(SolidEdgeContext context, object doc, object plane, FeatureSpec spec, bool visible, List<string> specWarnings)
+        private static object CreateProfileMulti(SolidEdgeContext context, object doc, object plane, FeatureSpec spec, List<double[][]> loops, bool visible, List<string> specWarnings)
         {
             object profileSets = Get(doc, "ProfileSets");
             object profileSet = Call(profileSets, "Add", null);
             object profiles = Get(profileSet, "Profiles");
             object profile = Call(profiles, "Add", new object[] { plane });
 
-            object lines = Get(profile, "Lines2d");
-            object relations = Get(profile, "Relations2d");
-
-            var loopLines = new List<(object line, double[] p0, double[] p1)>();
-            foreach (var pts in spec.Loops)
-            {
-                int n = pts.Length;
-                var lineObjs = new object[n];
-                for (int i = 0; i < n; i++)
-                {
-                    var p0 = pts[i];
-                    var p1 = pts[(i + 1) % n];
-                    lineObjs[i] = Call(lines, "AddBy2Points", new object[] { p0[0], p0[1], p1[0], p1[1] });
-                    loopLines.Add((lineObjs[i], p0, p1));
-                }
-                for (int i = 0; i < n; i++)
-                {
-                    Call(relations, "AddKeypoint", new object[] { lineObjs[i], 1, lineObjs[(i + 1) % n], 0 });
-                }
-            }
-
-            ApplySpecConstraints(context, doc, profile, spec, loopLines, specWarnings);
+            FillProfileWithLines(context, doc, profile, spec, loops, specWarnings);
 
             Call(profile, "End", new object[] { 0 });
             if (!visible) SetVisible(profile, false);
@@ -2808,11 +3183,190 @@ namespace SolidEdge.Spy.McpServer.Tools
         /// 本文件不再保留私有副本——两份解析必然漂移,校验就失去意义。
         /// </summary>
 
+        /// <summary>
+        /// 2026-10-03 IR 面锚定:把 "face:&lt;Face.ID&gt;" / "face:±X/±Y/±Z" 解析成一张【与实体面重合的隐藏参考平面】。
+        /// SE2022 没有"直接在实体面上建草图"的 API(Sketches.AddByPlanarFace 抛 0x80004021),唯一通路是
+        /// RefPlanes.AddParallelByDistance(face, 0, 1) 建贴面平面再在其上画(与 se_extrude_on_face 同路)。
+        /// 同一张面被多个特征引用时只建一张(facePlanes 缓存,避免模型树堆一串无名 RefPlane)。
+        /// localCoords(2026-10-04):coords:"local" 时轮廓按贴面平面局部 u/v 画——只要求【平面面】
+        /// (斜面也行);global 模式则要求【轴向面】(全局 2D 坐标在斜面无定义)。
+        /// </summary>
+        private static object ResolveFacePlane(object doc, string planeRef, Dictionary<int, object> facePlanes, bool localCoords = false)
+        {
+            var fr = FeatureSpecParser.ParseFacePlaneRef(planeRef);
+            if (fr == null || fr.ParseError != null)
+                throw new ArgumentException("plane \"" + planeRef + "\" 无法解析:" + (fr == null ? "格式错" : fr.ParseError) +
+                                            "(应为 face:<Face.ID> 或 face:±X/±Y/±Z)。");
+
+            object models = Get(doc, "Models");
+            if (Count(models) == 0)
+                throw new ArgumentException("face 锚定需要已有实体:当前模型还没有实体,没有面可引用。" +
+                                            "第一个特征请用 RefPlane_1/2/3,建出实体后再用 face: 在面上加特征。");
+            object model = Get(models, "Item", 1);
+
+            object face;
+            int faceId;
+            if (fr.Kind == "Id")
+            {
+                int total;
+                var ids = new List<int>();
+                face = FindFaceById(model, fr.FaceId, out total, ids);
+                if (face == null)
+                    throw new ArgumentException("找不到 Face.ID=" + fr.FaceId + " 的面(当前实体共 " + total + " 个面:" +
+                                                string.Join(",", ids) + ")。" +
+                                                "几何变更后 Face.ID 会变,先用 se_read_geometry 或 se_describe_object 重新确认。");
+                faceId = fr.FaceId;
+            }
+            else
+            {
+                face = SelectFaceByAxis(doc, model, fr.Axis, out faceId);
+            }
+
+            // 2026-10-03 实测:斜面若拖到建平面之后才拒绝,回滚删平面会失败(RefPlane.Delete 抛 E_INVALIDARG),
+            // 模型树残留一张无名隐藏平面。故在【建平面之前】提前拒绝,按模式分:
+            //   local:只要求【平面面】(Geometry is Plane,斜面/带内孔平面都放行;与法向无关);
+            //   global:要求【轴向面】(法向不沿全局 X/Y/Z 拒绝)。
+            // (轴向选择器分支已在 SelectFaceByAxis 内筛过轴向面,这里对它恒为通过;真正拦的是 face:<ID>。)
+            if (localCoords)
+            {
+                if (!IsPlanarFace(face))
+                    throw new ArgumentException(
+                        "该实体面不是平面面(圆柱/blend 等曲面无法建贴面草图平面),coords:\"local\" 只支持平面面。" +
+                        "可先用 se_read_geometry 确认面类型。");
+            }
+            else
+            {
+                double[] faceNormal = TryGetFaceNormal(face);
+                double normalMax = (faceNormal == null) ? 0.0
+                    : Math.Max(Math.Abs(faceNormal[0]), Math.Max(Math.Abs(faceNormal[1]), Math.Abs(faceNormal[2])));
+                if (normalMax < 1 - 1e-6)
+                    throw new ArgumentException(
+                        "该实体面不是轴向面(外法向不沿全局 X/Y/Z),全局 2D 轮廓坐标在斜面上无定义。" +
+                        "请改用 \"coords\":\"local\"(坐标为该面局部 u/v,支持斜面)或脚本。");
+            }
+
+            object cached;
+            if (facePlanes != null && facePlanes.TryGetValue(faceId, out cached) && cached != null) return cached;
+
+            object refPlanes = Get(doc, "RefPlanes");
+            object newPlane = Call(refPlanes, "AddParallelByDistance", new object[] { face, 0.0, 1 });
+            SetVisible(newPlane, false);
+            if (facePlanes != null) facePlanes[faceId] = newPlane;
+            return newPlane;
+        }
+
+        /// <summary>
+        /// 轴向选择器:在"外法向沿全局 X/Y/Z"的平面面里,按朝 +A / −A 选面。
+        /// 法向【轴】由 TryGetFaceNormal(边叉积)定;法向【朝向】由面的锚点相对模型包围盒定
+        /// (面在 +A 端 ⇒ 外法向朝 +A)。选不出 / 多解都抛明确错误并列出候选 Face.ID,要求改用 face:&lt;ID&gt;。
+        /// </summary>
+        private static object SelectFaceByAxis(object doc, object model, string axis, out int faceId)
+        {
+            faceId = -1;
+            char letter = axis[1];
+            int sign = axis[0] == '-' ? -1 : 1;
+            int ai = letter == 'X' ? 0 : (letter == 'Y' ? 1 : 2);
+
+            double[] box = TryModelRangeBox(doc);
+            if (box == null || box.Length < 6)
+                throw new ArgumentException("读不到模型包围盒,无法用轴向选择器(" + axis + ")定位面;请改用 face:<Face.ID>。");
+
+            var candidates = new List<object>();
+            var candidateIds = new List<int>();
+            var others = new List<string>();   // 报错用:模型里全部轴向平面面
+            foreach (var f in FindPlaneFaces(model))
+            {
+                double[] n = TryGetFaceNormal(f);
+                if (n == null) continue;
+
+                double ax = Math.Abs(n[0]), ay = Math.Abs(n[1]), az = Math.Abs(n[2]);
+                double max = Math.Max(ax, Math.Max(ay, az));
+                if (max < 1 - 1e-6) continue;   // 斜面:法向不沿任何全局轴
+                int fi = ax == max ? 0 : (ay == max ? 1 : 2);
+
+                double[] anchor = TryGetFaceAnchor(f);
+                if (anchor == null) continue;
+
+                double mid = (box[fi] + box[fi + 3]) / 2.0;
+                int fs = anchor[fi] >= mid ? 1 : -1;
+                int id = SafeInt(Get(f, "ID"));
+                others.Add("face:" + id + "(" + "XYZ"[fi] + (fs > 0 ? "+" : "-") + ")");
+                if (fi == ai && fs == sign)
+                {
+                    candidates.Add(f);
+                    candidateIds.Add(id);
+                }
+            }
+
+            if (candidates.Count == 0)
+                throw new ArgumentException("模型里没有外法向朝 " + axis + " 的轴向平面面。当前轴向平面面:" +
+                                            (others.Count > 0 ? string.Join(",", others) : "(无)") +
+                                            "。请改用 face:<Face.ID> 精确指定。");
+            if (candidates.Count > 1)
+                throw new ArgumentException("外法向朝 " + axis + " 的轴向平面面有 " + candidates.Count +
+                                            " 个(Face.ID:" + string.Join(",", candidateIds) + "),选择器无法区分。" +
+                                            "请改用 face:<Face.ID> 精确指定。");
+
+            faceId = candidateIds[0];
+            return candidates[0];
+        }
+
+        /// <summary>取面上的一个锚点(首条边的起点,世界坐标);读不到返回 null。</summary>
+        private static double[] TryGetFaceAnchor(object face)
+        {
+            try
+            {
+                var f = (SolidEdgeGeometry.Face)face;
+                var edges = (SolidEdgeGeometry.Edges)f.Edges;
+                if (edges.Count < 1) return null;
+                var e = (SolidEdgeGeometry.Edge)edges.Item(1);
+                Array sp = Array.CreateInstance(typeof(double), 0);
+                Array ep = Array.CreateInstance(typeof(double), 0);
+                e.GetEndPoints(ref sp, ref ep);
+                if (sp == null || sp.Length < 3) return null;
+                return new[]
+                {
+                    Convert.ToDouble(sp.GetValue(0), CultureInfo.InvariantCulture),
+                    Convert.ToDouble(sp.GetValue(1), CultureInfo.InvariantCulture),
+                    Convert.ToDouble(sp.GetValue(2), CultureInfo.InvariantCulture)
+                };
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>2026-10-03:清掉某张 face 平面的缓存条目(特征失败回滚用)。null=成功;否则为提示文案。</summary>
+        private static string TryDeleteFacePlane(Dictionary<int, object> facePlanes, int faceId)
+        {
+            object plane;
+            if (facePlanes == null || !facePlanes.TryGetValue(faceId, out plane)) return null;
+            facePlanes.Remove(faceId);
+            if (plane == null) return null;
+            try
+            {
+                Exception err;
+                if (ManualInvoke.TryInvoke(plane, "Delete", Array.Empty<object>(), out _, out err)) return null;
+                return "回滚 face 平面 face:" + faceId + " 失败:" + (err == null ? "未知错误" : err.Message) +
+                       "(模型树可能残留一张无名隐藏参考平面,可手动删除,不影响后续建模)。";
+            }
+            catch (Exception ex)
+            {
+                return "回滚 face 平面 face:" + faceId + " 异常:" + ex.Message + "(可能残留一张无名隐藏参考平面)。";
+            }
+        }
+
         private static object ResolvePlane(SolidEdgeContext context, object doc, string planeRef,
-            Dictionary<string, object> namedPlanes)
+            Dictionary<string, object> namedPlanes, Dictionary<int, object> facePlanes = null, bool localCoords = false)
         {
             if (string.IsNullOrWhiteSpace(planeRef))
                 throw new ArgumentException("特征缺少 plane(或 base)平面引用。");
+
+            // 2026-10-03:face 锚定 → 返回一张贴面的隐藏 RefPlane
+            // (global 模式的坐标投影在 CreateProfileForFeature 里做;local 模式直接按面局部 u/v 画)
+            if (planeRef.StartsWith("face:", StringComparison.OrdinalIgnoreCase))
+                return ResolveFacePlane(doc, planeRef, facePlanes, localCoords);
 
             if (planeRef.StartsWith("@", StringComparison.Ordinal))
             {
@@ -2853,7 +3407,7 @@ namespace SolidEdge.Spy.McpServer.Tools
                     return p;
             }
 
-            throw new ArgumentException("找不到参考面 \"" + planeRef + "\"(支持 RefPlane_1/2/3、@name、obj-K)。");
+            throw new ArgumentException("找不到参考面 \"" + planeRef + "\"(支持 RefPlane_1/2/3、@name、obj-K、face:<ID>/face:±Z)。");
         }
 
         // ---------------- COM 调用(裸 IDispatch,兼容强/弱类型 RCW) ----------------

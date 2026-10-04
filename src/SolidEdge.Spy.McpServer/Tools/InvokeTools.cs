@@ -293,6 +293,18 @@ public static class InvokeTools
 		}
 		string text = comFunctionInfo.ToString(includeParameters: true);
 		ComParameterInfo[] parameters = comFunctionInfo.Parameters;
+		string unsupportedOutArray = DetectUnsupportedOutArray(comFunctionInfo, member.Trim());
+		if (unsupportedOutArray != null)
+		{
+			try
+			{
+				comPtr?.Dispose();
+			}
+			catch
+			{
+			}
+			return (statusJson: null, comResult: null, error: unsupportedOutArray);
+		}
 		if (args == null)
 		{
 			args = Array.Empty<string>();
@@ -646,6 +658,46 @@ public static class InvokeTools
 			return "参数过多:成员签名 " + signature + " 只需要 " + num2 + " 个入参,实际提供 " + args.Length + " 个(注意 out/retval 参数无需提供)。";
 		}
 		return null;
+	}
+
+	private const int VT_ARRAY_BIT = 0x2000;
+
+	/// <summary>
+	/// 通用调度通道构不出 out 数组出参(签名含 (ref|out) double[] 的成员,如 GetRange/GetPointData/GetParamRange),
+	/// 与其发到 COM 再吃 0x80020005 TYPEMISMATCH,不如按签名在调用前 fail-fast 并指路(零 COM 往返)。
+	/// 判据 IsOut &amp;&amp; !IsRetval &amp;&amp; 数组型:retval 走 pVarResult,通道本就正常,必须排除;
+	/// 只看数组类型不判 IsOut 会误伤 in 方向 double[](loft/sweep 的 Origins)。
+	/// </summary>
+	private static string DetectUnsupportedOutArray(ComFunctionInfo info, string member)
+	{
+		if (info == null)
+		{
+			return null;
+		}
+		foreach (ComParameterInfo p in info.Parameters)
+		{
+			if (!p.IsOut || p.IsRetval || !IsArrayLikeType(p))
+			{
+				continue;
+			}
+			return "成员 \"" + member + "\" 含 out 数组出参,通用通道封送不了(已知盲区)。绕行:se_script_run(真 C# + PIA 强类型)或 se_read_geometry 等专用工具。";
+		}
+		return null;
+	}
+
+	private static bool IsArrayLikeType(ComParameterInfo p)
+	{
+		// EffectiveVarType 已解一层 VT_PTR(typelib 里 SAFEARRAY(double)* 写作 VT_PTR → lptdesc → VT_ARRAY|VT_R8)。
+		// ⚠️ 判据故意【不限于 VT_ARRAY|VT_R8】:真机只实证过 double 数组,但根因是通用通道【整体】
+		//    构不出 byref SAFEARRAY(ManualInvoke 只按值封送、无 VT_BYREF,与元素类型无关),
+		//    所以按"结构性不支持"宽拦所有 out 数组;若将来发现某元素类型(out BSTR[]/I4[])真能通,
+		//    再按实证收窄到白名单——宽拦的代价只是一句指路文案,漏拦的代价是 TYPEMISMATCH 撞墙。
+		VarEnum vt = p.EffectiveVarType;
+		if (vt == VarEnum.VT_SAFEARRAY)
+		{
+			return true;
+		}
+		return ((int)vt & VT_ARRAY_BIT) != 0;
 	}
 
 	private static VarEnum ResolveVt(ComParameterInfo p)

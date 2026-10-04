@@ -41,6 +41,7 @@ namespace SolidEdge.Spy.McpServer.Tools
                 new RevolveAxisRule(),        // E403 revolve 缺轴 / 轴退化 / 角度越界
                 new CutModeRule(),            // E404 finite 缺 depth / W405 未指定 mode(默认会切穿)
                 new SideDirectionRule(),      // E105/W402
+                new DirVolumeFieldRule(),     // W409 dir 解析失败 / E418 expectvolumedelta 解析失败
                 new ConsecutiveCutRule(),     // W401 同平面多孔未合并(僵尸头号杀手)
                 new CutOutsideStockRule(),    // W403 除料落在毛坯外
                 new LoopOverlapRule(),        // W404 环重叠
@@ -109,7 +110,11 @@ namespace SolidEdge.Spy.McpServer.Tools
             if (s.HasCircle || s.HasCircles || s.HasSlot) yield break;
             if (s.ShapeError == null) yield break;
 
-            yield return ctx.Error("E102", "shape", s.ShapeError + " 或 circle(圆)/circles(多真圆)/slot(腰孔)/rect(矩形)/polygon(多边形)/loops(多环点列)。",
+            // 2026-09-30 v2.1:去掉与 ShapeError 重复的六形状罗列,改为给可复制的正确写法
+            //(形状键平铺在特征对象顶层;嵌套 shape 是 se_extrude_on_face 的入参写法,勿串味)。
+            // field 名保持 "shape" 不改——E409/E412 等 5 处一致使用,单改此处会制造跨规则不一致。
+            yield return ctx.Error("E102", "shape", s.ShapeError +
+                " 形状键平铺在特征对象顶层(无 shape 包装),如 \"rect\":[[0,0],[0.1,0.1]];嵌套 shape:{...} 是 se_extrude_on_face 的入参写法。",
                 new { action = "provide", field = "shape", oneOf = new[] { "circle", "circles", "slot", "rect", "polygon", "loops" } });
         }
     }
@@ -488,8 +493,12 @@ namespace SolidEdge.Spy.McpServer.Tools
         {
             foreach (var f in ctx.Current.UnknownFields)
             {
+                // 2026-09-30 v2.1:高频误用键 shape 给 did-you-mean(踩坑那一刻教学,平时零常驻成本)。
+                string hint = string.Equals(f, "shape", StringComparison.OrdinalIgnoreCase)
+                    ? "本工具形状键平铺在特征对象顶层(无 shape 包装),如 \"rect\":[[0,0],[0.1,0.1]];嵌套 shape:{...} 是 se_extrude_on_face 的入参写法。"
+                    : "";
                 yield return ctx.Warn("W102", f,
-                    "未知字段 \"" + f + "\",将被忽略(可能是拼写错误)。",
+                    "未知字段 \"" + f + "\",将被忽略(可能是拼写错误)。" + hint,
                     new { action = "remove_or_rename", field = f });
             }
         }
@@ -519,18 +528,58 @@ namespace SolidEdge.Spy.McpServer.Tools
 
             if (!isPlaneOp && s.OpLower != "extrude" && s.OpLower != "cut" &&
                 s.OpLower != "rib" && s.OpLower != "pattern" && s.OpLower != "helix" &&
-                s.OpLower != "draft" && s.OpLower != "web_network" && s.OpLower != "extrude_surface") yield break;
+                s.OpLower != "draft" && s.OpLower != "web_network" && s.OpLower != "extrude_surface" &&
+                s.OpLower != "hole") yield break;
+
+            // 2026-10-04:coords 字段(face 平面坐标模式)。非法值 / 与非 face 平面共存在静态层拦下,
+            // 别留到执行层才炸(执行层错误无法 dryRun 预演)。
+            if (s.Coords != null && s.Coords != "global" && s.Coords != "local")
+            {
+                yield return ctx.Error("E203", "coords",
+                    "coords 只能是 \"global\"(默认,全局世界坐标投影)或 \"local\"(面局部 u/v),收到 \"" + s.Coords + "\"。",
+                    new { action = "set", field = "coords", example = "global / local" });
+            }
+            if (s.CoordsLocal &&
+                !(ref_ != null && ref_.StartsWith("face:", StringComparison.OrdinalIgnoreCase)))
+            {
+                yield return ctx.Error("E203", "coords",
+                    "coords:\"local\" 只在 plane 为 face:<ID>/face:±轴 时有意义(当前 " + field + "=\"" + ref_ +
+                    "\")。普通参考平面本来就是面局部 u/v,无需 coords。",
+                    new { action = "set", field = "coords" });
+            }
 
             if (string.IsNullOrWhiteSpace(ref_))
             {
                 yield return ctx.Error("E201", field,
-                    "缺少 \"" + field + "\" 平面引用(支持 RefPlane_1/2/3、@别名、obj-K)。",
+                    "缺少 \"" + field + "\" 平面引用(支持 RefPlane_1/2/3、@别名、obj-K、face:<ID>/face:±Z)。",
                     new { action = "provide", field = field });
                 yield break;
             }
 
             if (ref_.StartsWith("obj-", StringComparison.OrdinalIgnoreCase))
                 yield break;   // 句柄:静态校验不判
+
+            // 2026-10-03 面锚定(仅非 plane op):只查格式,查不了存在性——
+            // 面在正在构建的模型里,静态校验看不到 ⇒ 与 obj-K 同等对待。
+            if (!isPlaneOp && ref_.StartsWith("face:", StringComparison.OrdinalIgnoreCase))
+            {
+                var fp = s.FacePlaneRef;
+                if (fp != null && fp.ParseError != null)
+                {
+                    yield return ctx.Error("E203", field, fp.ParseError,
+                        new { action = "set", field = field, example = "face:26 / face:+Z" });
+                    yield break;
+                }
+                // 面锚定目前只有 extrude/cut/hole 三个 op 实现了世界坐标→面局部投影,
+                // 其余 op(rib/draft/helix/pattern/...)静态拦下,别留到执行层才炸。
+                if (s.OpLower != "extrude" && s.OpLower != "cut" && s.OpLower != "hole")
+                {
+                    yield return ctx.Error("E203", field,
+                        "face:<ID>/face:±Z 面锚定目前只支持 extrude / cut / hole(收到 op=\"" + s.Op + "\")。",
+                        new { action = "set", field = field, example = "RefPlane_1" });
+                }
+                yield break;
+            }
 
             if (ref_.StartsWith("@", StringComparison.Ordinal))
             {
@@ -582,7 +631,7 @@ namespace SolidEdge.Spy.McpServer.Tools
 
             // 其它:构建器会按 DisplayName 匹配。中文版是「参考平面_N」,英文名基本匹配不上。
             yield return ctx.Warn("W202", field,
-                "\"" + ref_ + "\" 不是 RefPlane_N / @别名 / obj-K。构建器会退化为按 DisplayName 匹配," +
+                "\"" + ref_ + "\" 不是 RefPlane_N / @别名 / obj-K / face:。构建器会退化为按 DisplayName 匹配," +
                 "中文版 SE 的显示名是「参考平面_N」,通常匹配不上。",
                 new { action = "set", field = field, example = "RefPlane_1" });
         }
@@ -872,6 +921,47 @@ namespace SolidEdge.Spy.McpServer.Tools
     }
 
     /// <summary>
+    /// W409 dir 解析失败(构建器会回退默认方向) · E418 expectvolumedelta 解析失败(无法核对设计意图)。
+    /// 2026-09-29 新增的两个语义字段:进 KnownFields 只免掉 W102 未知字段,格式错仍须在这里拦——
+    /// 否则"静态校验 status=ok"与实际构建行为不符,违背"校验通过=构建器会这么解释"的承诺。
+    /// 分级对齐运行时:dir 错 → 回退默认 + warning(不致命);expectvolumedelta 错 → 无法核对 + error。
+    /// </summary>
+    public sealed class DirVolumeFieldRule : IFeatureRule
+    {
+        public string Code { get { return "W409"; } }
+        public Severity DefaultLevel { get { return Severity.Warning; } }
+        public string[] AppliesTo { get { return new[] { "extrude", "cut", "hole" }; } }
+
+        public IEnumerable<Issue> Check(ValidationContext ctx)
+        {
+            var s = ctx.Current;
+
+            if (s.DirParseError != null)
+            {
+                yield return ctx.Warn("W409", "dir",
+                    "dir 无法解析:" + s.DirParseError + "。构建器会回退到默认方向(side 由方向自愈决定)。",
+                    new { action = "fix", field = "dir", example = new[] { 0, 0, 1 } });
+            }
+
+            // 2026-10-03:dir→side 换算依赖"已知平面法向";face 平面的法向静态换算不出来 ⇒ dir 会被忽略。
+            if (s.FacePlaneRef != null && s.HasDir)
+            {
+                yield return ctx.Warn("W409", "dir",
+                    "plane 是 face 引用时无法静态换算 dir→side(dir 需要已知平面法向),dir 将被忽略," +
+                    "请改用显式 side(1/2)。",
+                    new { action = "set", field = "side", allowed = new[] { 1, 2 } });
+            }
+
+            if (s.ExpectVolParseError != null)
+            {
+                yield return ctx.Error("E418", "expectvolumedelta",
+                    "expectvolumedelta 无法解析:" + s.ExpectVolParseError + "。声明了却解析不出来=无法核对设计意图,建前拦下。",
+                    new { action = "fix", field = "expectvolumedelta", example = -1250 });
+            }
+        }
+    }
+
+    /// <summary>
     /// W401:同一平面上出现两次及以上 cut/hole 却没有合并成一个轮廓——**僵尸特征头号杀手**。
     /// 实测:同一模型第 2 个及以后的 AddThroughNext 必然 Status=1216476311(几何未生成),
     /// 与 mode=next/all/finite 无关。多孔必须画进同一个 Profile 的多个圆环(circles),一次切完。
@@ -1133,24 +1223,104 @@ namespace SolidEdge.Spy.McpServer.Tools
                 yield break;
             }
 
-            // 首项:路径(开放链或闭合轮廓均可,但不能多环)
+            // 首项:路径(trace 线弧混排 / polygon 开放链 / 单个闭合轮廓均可,但不能多环)
             var path = s.Profiles[0];
             if (string.IsNullOrWhiteSpace(path.PlaneRef))
                 yield return ctx.Error("E411", "profiles[0].plane",
                     "profiles[0](路径)缺少 plane。",
                     new { action = "provide", field = "profiles[0].plane" });
+            else if (path.TraceError != null)
+                yield return ctx.Error("E411", "profiles[0].trace",
+                    "profiles[0](路径) trace 无法解析:" + path.TraceError +
+                    "。格式 [{\"line\":[[x,y],[x,y]]},{\"arc\":{\"center\":[x,y],\"start\":[x,y],\"end\":[x,y]}}]。",
+                    new { action = "fix", field = "profiles[0].trace" });
             else if (path.HasCircles)
                 yield return ctx.Error("E411", "profiles[0].shape",
-                    "profiles[0](路径)用了 circles——路径必须是单条链(polygon 开放链)或单个闭合轮廓。",
-                    new { action = "set", field = "profiles[0].shape", oneOf = new[] { "polygon", "circle", "slot", "rect", "loops" } });
-            else if (path.ShapeError != null && path.OpenChain == null)
+                    "profiles[0](路径)用了 circles——路径必须是单条链(trace 线弧混排 / polygon 开放链)或单个闭合轮廓。",
+                    new { action = "set", field = "profiles[0].shape", oneOf = new[] { "trace", "polygon", "circle", "slot", "rect", "loops" } });
+            else if (path.ShapeError != null && path.OpenChain == null && path.Trace == null)
                 yield return ctx.Error("E411", "profiles[0].shape",
-                    "profiles[0](路径)" + path.ShapeError + " 路径可用 polygon(开放链,≥2 点)或 circle/rect/loops(闭合)。",
+                    "profiles[0](路径)" + path.ShapeError + " 路径可用 trace(线段/真圆弧)或 polygon(开放链,≥2 点)或 circle/rect/loops(闭合)。",
                     new { action = "fix", field = "profiles[0].shape" });
+
+            // trace 段间首尾必须相接:构建器对相邻段加 AddKeypoint 强制端点重合,不接会让 SE 报错或轮廓扭曲。
+            if (path.Trace != null)
+            {
+                for (int i = 0; i + 1 < path.Trace.Count; i++)
+                {
+                    double[] e = path.Trace[i].P1, n = path.Trace[i + 1].P0;
+                    if (Math.Abs(e[0] - n[0]) > 1e-9 || Math.Abs(e[1] - n[1]) > 1e-9)
+                    {
+                        yield return ctx.Error("E411", "profiles[0].trace",
+                            "profiles[0](路径)第 " + (i + 1) + " 段终点(" + e[0] + "," + e[1] +
+                            ")与第 " + (i + 2) + " 段起点(" + n[0] + "," + n[1] + ")不重合——路径必须首尾相连。",
+                            new { action = "fix", field = "profiles[0].trace" });
+                        break;
+                    }
+                }
+            }
+
+            // 弧必须与相邻段【切向连续】——端点重合还不够:接点处不相切扫出来的就是折角(90° 斜接)而不是弯头。
+            // 2026-10-04 事故教训:圆心错放到拐角点上时端点仍重合、静态层全绿,直到肉眼才发现。
+            // 判据纯三角运算(零 COM 往返):接点两侧的单位切向夹角 > TangentTolDeg 即拒。
+            // 直线-直线折角是合法的斜接(两段直管对接),不在此列;只查"任一侧是圆弧"的接点。
+            if (path.Trace != null)
+            {
+                for (int i = 0; i + 1 < path.Trace.Count; i++)
+                {
+                    var segA = path.Trace[i];
+                    var segB = path.Trace[i + 1];
+                    if (segA.Kind != "arc" && segB.Kind != "arc") continue;
+                    double[] ta, tb;
+                    if (!TryTangentAt(segA, true, out ta) || !TryTangentAt(segB, false, out tb)) continue;
+                    double dot = ta[0] * tb[0] + ta[1] * tb[1];
+                    if (dot > 1.0) dot = 1.0; else if (dot < -1.0) dot = -1.0;
+                    double deg = Math.Acos(dot) * 180.0 / Math.PI;
+                    if (deg > TangentTolDeg)
+                        yield return ctx.Error("E411", "profiles[0].trace",
+                            "profiles[0](路径)第 " + (i + 1) + " 段与第 " + (i + 2) + " 段在接点处【不相切】(切向夹角 " +
+                            deg.ToString("F1", CultureInfo.InvariantCulture) + "°)——圆弧必须与相邻段相切。" +
+                            "相切弯头的圆心在【拐角的对角点】:R=0.02 从 (0.02,0.03) 转到 (0.04,0.05) 时 center=[0.04,0.03]。" +
+                            "更省事的写法是顶点链自动倒圆角:{\"plane\":...,\"polygon\":[[u,v],...],\"fillet\":0.02}(圆心/切点由几何算出,必然相切)。",
+                            new { action = "fix", field = "profiles[0].trace" });
+                }
+            }
 
             // 其余项:截面(单闭合轮廓),复用 loft 的逐项核对
             foreach (var e in LoftRule.SectionIssues(ctx, s, 1, "E411"))
                 yield return e;
+        }
+
+        /// <summary>接点处允许的切向夹角容差(度)。只在"任一侧是圆弧"的接点判;直-直折角是合法斜接。</summary>
+        private const double TangentTolDeg = 2.0;
+
+        /// <summary>
+        /// 段沿【声明方向】(P0→P1)在起点/终点处的单位切向(相切检查用)。
+        /// 圆弧按【劣弧】定方向(与构建层 CreateProfileTrace 的交换规则一致):切向 = sign(sweep)·(−sin a, cos a)。
+        /// 退化段(零长/无圆心/整圆)返回 false,交给别的检查处理。
+        /// </summary>
+        private static bool TryTangentAt(PathSegment seg, bool atEnd, out double[] t)
+        {
+            t = null;
+            if (seg.Kind == "line")
+            {
+                double dx = seg.P1[0] - seg.P0[0], dy = seg.P1[1] - seg.P0[1];
+                double l = Math.Sqrt(dx * dx + dy * dy);
+                if (l < 1e-12) return false;
+                t = new[] { dx / l, dy / l };
+                return true;
+            }
+            if (seg.Kind != "arc" || seg.Center == null || seg.P0 == null || seg.P1 == null) return false;
+            double a0 = Math.Atan2(seg.P0[1] - seg.Center[1], seg.P0[0] - seg.Center[0]);
+            double a1 = Math.Atan2(seg.P1[1] - seg.Center[1], seg.P1[0] - seg.Center[0]);
+            double sweep = a1 - a0;
+            while (sweep <= -Math.PI) sweep += 2.0 * Math.PI;
+            while (sweep > Math.PI) sweep -= 2.0 * Math.PI;     // 归一到 (−π,π] = 劣弧
+            if (Math.Abs(sweep) < 1e-12) return false;
+            double a = atEnd ? a1 : a0;
+            double sgn = sweep > 0 ? 1.0 : -1.0;
+            t = new[] { -Math.Sin(a) * sgn, Math.Cos(a) * sgn };
+            return true;
         }
     }
 

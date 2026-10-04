@@ -117,6 +117,73 @@ namespace SolidEdge.Spy.McpServer.Tests
             Assert.Equal(0.02, s.CircleY, 12);
         }
 
+        // ---------- sweep 路径 trace(线段+真圆弧,2026-10-04) ----------
+
+        [Fact]
+        public void sweep路径trace_解析出线段与圆弧段()
+        {
+            var s = ParseOne("{\"op\":\"sweep\",\"profiles\":[" +
+                "{\"plane\":\"RefPlane_2\",\"trace\":[" +
+                "{\"line\":[[0,0],[0,0.03]]}," +
+                "{\"arc\":{\"center\":[0.02,0.03],\"start\":[0,0.03],\"end\":[0.02,0.05]}}," +
+                "{\"line\":[[0.02,0.05],[0.06,0.05]]}]}," +
+                "{\"plane\":\"RefPlane_1\",\"circle\":[0,0,0.006]}]}");
+            var path = s.Profiles[0];
+            Assert.NotNull(path.Trace);
+            Assert.Null(path.TraceError);
+            Assert.Equal(3, path.Trace.Count);
+            Assert.Equal("line", path.Trace[0].Kind);
+            Assert.Equal("arc", path.Trace[1].Kind);
+            Assert.Equal(0.02, path.Trace[1].Center[0], 12);
+            Assert.Equal(0.03, path.Trace[1].Center[1], 12);
+            Assert.Null(path.ShapeError);                  // trace 生效后不应残留"缺形状"错误
+            Assert.Equal("trace(线段/圆弧)", path.ShapeSource);
+        }
+
+        [Fact]
+        public void sweep路径polygon加fillet_展开出相切圆弧段()
+        {
+            // 顶点链 + R → 圆心/切点由几何算出:R=0.02 的 90° 拐角,圆心落在对角点 [0.02,0.03]
+            var s = ParseOne("{\"op\":\"sweep\",\"profiles\":[" +
+                "{\"plane\":\"RefPlane_2\",\"polygon\":[[0,0],[0,0.05],[0.06,0.05]],\"fillet\":0.02}," +
+                "{\"plane\":\"RefPlane_1\",\"circle\":[0,0,0.006]}]}");
+            var path = s.Profiles[0];
+            Assert.Null(path.ShapeError);
+            Assert.NotNull(path.Trace);
+            Assert.Equal(3, path.Trace.Count);
+            Assert.Equal("line", path.Trace[0].Kind);
+            Assert.Equal("arc", path.Trace[1].Kind);
+            Assert.Equal("line", path.Trace[2].Kind);
+            Assert.Equal(0.0, path.Trace[1].P0[0], 12);    // 入切点 = 顶点前 0.02
+            Assert.Equal(0.03, path.Trace[1].P0[1], 12);
+            Assert.Equal(0.02, path.Trace[1].P1[0], 12);   // 出切点 = 顶点后 0.02
+            Assert.Equal(0.05, path.Trace[1].P1[1], 12);
+            Assert.Equal(0.02, path.Trace[1].Center[0], 12);   // 圆心 = 拐角对角点
+            Assert.Equal(0.03, path.Trace[1].Center[1], 12);
+            Assert.Equal("polygon+fillet(自动切弧)", path.ShapeSource);
+            Assert.Empty(path.Loops);
+        }
+
+        [Fact]
+        public void sweep路径trace圆弧缺center_记TraceError不抛异常()
+        {
+            var s = ParseOne("{\"op\":\"sweep\",\"profiles\":[" +
+                "{\"plane\":\"RefPlane_2\",\"trace\":[{\"arc\":{\"start\":[0,0],\"end\":[0.02,0]}}]}," +
+                "{\"plane\":\"RefPlane_1\",\"circle\":[0,0,0.006]}]}");
+            Assert.Null(s.Profiles[0].Trace);
+            Assert.Contains("arc", s.Profiles[0].TraceError);
+        }
+
+        [Fact]
+        public void sweep路径trace与polygon并存_记TraceError()
+        {
+            var s = ParseOne("{\"op\":\"sweep\",\"profiles\":[" +
+                "{\"plane\":\"RefPlane_2\",\"polygon\":[[0,0],[0,0.03]],\"trace\":[{\"line\":[[0,0],[0,0.03]]}]}," +
+                "{\"plane\":\"RefPlane_1\",\"circle\":[0,0,0.006]}]}");
+            Assert.Null(s.Profiles[0].Trace);
+            Assert.Contains("互斥", s.Profiles[0].TraceError);
+        }
+
         // ---------- revolve 专用 ----------
 
         [Fact]
@@ -242,6 +309,49 @@ namespace SolidEdge.Spy.McpServer.Tests
             var s = ParseOne("{\"depht\":0.05,\"plane\":\"RefPlane_1\"}");
             Assert.Contains("depht", s.UnknownFields);
             Assert.DoesNotContain("plane", s.UnknownFields);
+        }
+
+        // ---------- coords(face 平面坐标模式,2026-10-04) ----------
+
+        [Fact]
+        public void coords缺失_为null_走global()
+        {
+            var s = ParseOne("{\"plane\":\"face:26\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.Null(s.Coords);
+            Assert.False(s.CoordsLocal);
+            Assert.NotNull(s.FacePlaneRef);
+        }
+
+        [Fact]
+        public void coordslocal_大小写不敏感_原始值小写保存()
+        {
+            var s = ParseOne("{\"plane\":\"face:26\",\"coords\":\"LOCAL\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.Equal("local", s.Coords);
+            Assert.True(s.CoordsLocal);
+        }
+
+        [Fact]
+        public void coordsglobal_CoordsLocal为假()
+        {
+            var s = ParseOne("{\"plane\":\"face:26\",\"coords\":\"global\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.Equal("global", s.Coords);
+            Assert.False(s.CoordsLocal);
+        }
+
+        [Fact]
+        public void coords非法值_原样小写保存_不在此报错()
+        {
+            // 解析层只认 "local",非法值交给校验层报 E203
+            var s = ParseOne("{\"plane\":\"face:26\",\"coords\":\"Bogus\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.Equal("bogus", s.Coords);
+            Assert.False(s.CoordsLocal);
+        }
+
+        [Fact]
+        public void coords在白名单内_不进UnknownFields()
+        {
+            var s = ParseOne("{\"plane\":\"face:26\",\"coords\":\"local\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.DoesNotContain("coords", s.UnknownFields);
         }
 
         [Fact]

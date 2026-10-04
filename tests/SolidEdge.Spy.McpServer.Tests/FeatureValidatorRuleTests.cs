@@ -15,6 +15,134 @@ namespace SolidEdge.Spy.McpServer.Tests
 
         private static bool Has(ValidationReport r, string code) => r.issues.Any(i => i.code == code);
 
+        // ---------- coords(face 平面坐标模式,2026-10-04) ----------
+
+        [Fact]
+        public void face锚定加coordslocal_合法无error()
+        {
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"face:26\",\"coords\":\"local\",\"depth\":0.005,\"rect\":[[0,0],[0.04,0.04]]}]");
+            Assert.Equal("ok", r.status);
+            Assert.Equal(0, r.errorCount);
+        }
+
+        [Fact]
+        public void coordsglobal配face平面_合法无error()
+        {
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"face:+Z\",\"coords\":\"global\",\"depth\":0.005,\"rect\":[[0,0],[0.04,0.04]]}]");
+            Assert.Equal("ok", r.status);
+            Assert.Equal(0, r.errorCount);
+        }
+
+        [Fact]
+        public void coords非法值_E203报error()
+        {
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"face:26\",\"coords\":\"bogus\",\"depth\":0.005,\"rect\":[[0,0],[0.04,0.04]]}]");
+            Assert.True(Has(r, "E203"));
+            Assert.Equal("error", r.status);
+        }
+
+        [Fact]
+        public void coordslocal配非face平面_E203报error()
+        {
+            // 普通参考平面本来就是面局部 u/v,coords:"local" 是误用
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"RefPlane_1\",\"coords\":\"local\",\"depth\":0.005,\"rect\":[[0,0],[0.04,0.04]]}]");
+            Assert.True(Has(r, "E203"));
+            Assert.Equal("error", r.status);
+        }
+
+        [Fact]
+        public void coordslocal配缺plane_E203仍报出()
+        {
+            var r = V("[{\"op\":\"extrude\",\"coords\":\"local\",\"depth\":0.005,\"rect\":[[0,0],[0.04,0.04]]}]");
+            Assert.True(Has(r, "E203"));
+        }
+
+        // ---------- sweep 路径 trace(线段+真圆弧,2026-10-04) ----------
+
+        [Fact]
+        public void sweep路径trace线弧混排_合法无error()
+        {
+            var r = V("[{\"op\":\"sweep\",\"profiles\":[" +
+                "{\"plane\":\"RefPlane_2\",\"trace\":[" +
+                "{\"line\":[[0,0],[0,0.03]]}," +
+                "{\"arc\":{\"center\":[0.02,0.03],\"start\":[0,0.03],\"end\":[0.02,0.05]}}," +
+                "{\"line\":[[0.02,0.05],[0.06,0.05]]}]}," +
+                "{\"plane\":\"RefPlane_1\",\"circle\":[0,0,0.006]}]}]");
+            Assert.Equal("ok", r.status);
+            Assert.Equal(0, r.errorCount);
+        }
+
+        [Fact]
+        public void sweep路径trace弧与直线不相切_E411报error()
+        {
+            // 2026-10-04 事故原样锁死:圆心写在【拐角点】[0,0.05](而非对角点 [0.02,0.03]),
+            // 端点照样重合、旧静态层全绿,真机扫出来是 90° 斜接的折角而非相切弯头。
+            var r = V("[{\"op\":\"sweep\",\"profiles\":[" +
+                "{\"plane\":\"RefPlane_2\",\"trace\":[" +
+                "{\"line\":[[0,0],[0,0.03]]}," +
+                "{\"arc\":{\"center\":[0,0.05],\"start\":[0,0.03],\"end\":[0.02,0.05]}}," +
+                "{\"line\":[[0.02,0.05],[0.06,0.05]]}]}," +
+                "{\"plane\":\"RefPlane_1\",\"circle\":[0,0,0.006]}]}]");
+            Assert.Equal("error", r.status);
+            Assert.True(Has(r, "E411"));
+            var issue = r.issues.First(i => i.code == "E411");
+            Assert.Contains("不相切", issue.message);
+        }
+
+        [Fact]
+        public void sweep路径polygon加fillet_展开成相切trace无error()
+        {
+            // 顶点链 + R:圆心/切点由几何算出 → 与相邻直段必然相切,不需要调用方手算圆心
+            var r = V("[{\"op\":\"sweep\",\"profiles\":[" +
+                "{\"plane\":\"RefPlane_2\",\"polygon\":[[0,0],[0,0.05],[0.06,0.05]],\"fillet\":0.02}," +
+                "{\"plane\":\"RefPlane_1\",\"circle\":[0,0,0.006]}]}]");
+            Assert.Equal("ok", r.status);
+            Assert.Equal(0, r.errorCount);
+        }
+
+        [Fact]
+        public void sweep路径fillet半径放不下_E411报error()
+        {
+            var r = V("[{\"op\":\"sweep\",\"profiles\":[" +
+                "{\"plane\":\"RefPlane_2\",\"polygon\":[[0,0],[0,0.01],[0.01,0.01]],\"fillet\":0.2}," +
+                "{\"plane\":\"RefPlane_1\",\"circle\":[0,0,0.006]}]}]");
+            Assert.Equal("error", r.status);
+            Assert.True(Has(r, "E411"));
+        }
+
+        [Fact]
+        public void sweep路径trace段不相接_E411报error()
+        {
+            var r = V("[{\"op\":\"sweep\",\"profiles\":[" +
+                "{\"plane\":\"RefPlane_2\",\"trace\":[" +
+                "{\"line\":[[0,0],[0,0.03]]}," +
+                "{\"line\":[[0.01,0.03],[0.06,0.03]]}]}," +
+                "{\"plane\":\"RefPlane_1\",\"circle\":[0,0,0.006]}]}]");
+            Assert.True(Has(r, "E411"));
+            Assert.Equal("error", r.status);
+        }
+
+        [Fact]
+        public void sweep路径trace格式错_E411报error()
+        {
+            var r = V("[{\"op\":\"sweep\",\"profiles\":[" +
+                "{\"plane\":\"RefPlane_2\",\"trace\":[{\"bogus\":[[0,0],[0,1]]}]}," +
+                "{\"plane\":\"RefPlane_1\",\"circle\":[0,0,0.006]}]}]");
+            Assert.True(Has(r, "E411"));
+            var issue = r.issues.First(i => i.code == "E411");
+            Assert.Contains("trace", issue.message);
+        }
+
+        [Fact]
+        public void sweep路径trace与polygon互斥_E411报error()
+        {
+            var r = V("[{\"op\":\"sweep\",\"profiles\":[" +
+                "{\"plane\":\"RefPlane_2\",\"trace\":[{\"line\":[[0,0],[0,0.03]]}],\"polygon\":[[0,0],[0,0.03]]}," +
+                "{\"plane\":\"RefPlane_1\",\"circle\":[0,0,0.006]}]}]");
+            Assert.True(Has(r, "E411"));
+            Assert.Equal("error", r.status);
+        }
+
         // ---------- 基线:合法特征必须全绿 ----------
 
         [Fact]
@@ -416,6 +544,98 @@ namespace SolidEdge.Spy.McpServer.Tests
                 ",{\"op\":\"helix\",\"plane\":\"RefPlane_1\",\"circle\":[0.03,0,0.005],\"axis\":[[0,0],[0,0.05]],\"pitch\":0.015,\"height\":0.04}]");
             Assert.False(Has(r, "E412"));
             Assert.False(Has(r, "W412"));
+        }
+
+        // ---------- 2026-10-01 DirVolumeFieldRule:dir / expectvolumedelta 声明格式 ----------
+
+        [Fact]
+        public void dir_不是三元数组_W409警告但不阻断()
+        {
+            // dir 格式错 → 构建器回退默认方向,只是不按调用方意图,不该拦成 error
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"RefPlane_1\",\"depth\":0.05,\"rect\":[[0,0],[0.04,0.04]],\"dir\":[0,1]}]");
+            Assert.True(Has(r, "W409"));
+            Assert.Equal(0, r.errorCount);
+            Assert.Equal("warning", r.status);
+        }
+
+        [Fact]
+        public void dir_零向量_W409警告()
+        {
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"RefPlane_1\",\"depth\":0.05,\"rect\":[[0,0],[0.04,0.04]],\"dir\":[0,0,0]}]");
+            Assert.True(Has(r, "W409"));
+            Assert.Equal(0, r.errorCount);
+        }
+
+        [Fact]
+        public void expectvolumedelta_给字符串_E418报错()
+        {
+            // 声明了体积期望却解析不出来 = 无法核对设计意图,属"必然失败",建前必须拦下
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"RefPlane_1\",\"depth\":0.05,\"rect\":[[0,0],[0.04,0.04]],\"expectvolumedelta\":\"约1250\"}]");
+            Assert.True(Has(r, "E418"));
+            Assert.Equal("error", r.status);
+        }
+
+        [Fact]
+        public void dir与expectvolumedelta合法_不报W409E418()
+        {
+            // 负例:合法声明不得误报
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"RefPlane_1\",\"depth\":0.05,\"rect\":[[0,0],[0.04,0.04]],\"dir\":[0,0,1],\"expectvolumedelta\":[-1300,-1200]}]");
+            Assert.False(Has(r, "W409"));
+            Assert.False(Has(r, "E418"));
+        }
+
+        [Fact]
+        public void dir_四个元素_W409警告()
+        {
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"RefPlane_1\",\"depth\":0.05,\"rect\":[[0,0],[0.04,0.04]],\"dir\":[0,0,1,0]}]");
+            Assert.True(Has(r, "W409"));
+            Assert.Equal(0, r.errorCount);
+        }
+
+        [Fact]
+        public void dir_含非数字元素_W409警告()
+        {
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"RefPlane_1\",\"depth\":0.05,\"rect\":[[0,0],[0.04,0.04]],\"dir\":[\"x\",0,1]}]");
+            Assert.True(Has(r, "W409"));
+            Assert.Equal(0, r.errorCount);
+        }
+
+        [Fact]
+        public void dir_切与孔也在规则覆盖内_W409警告()
+        {
+            // AppliesTo = extrude/cut/hole:三个真正吃 dir 的 op 都要覆盖
+            var r = V("[" + PlateBase +
+                ",{\"op\":\"cut\",\"plane\":\"RefPlane_1\",\"depth\":0.01,\"rect\":[[0,0],[0.02,0.02]],\"dir\":[0,1]}" +
+                ",{\"op\":\"hole\",\"plane\":\"RefPlane_1\",\"center\":[0.03,0.02],\"diameter\":0.008,\"mode\":\"through\",\"dir\":[0,1]}]");
+            Assert.True(Has(r, "W409"));
+            Assert.Equal(0, r.errorCount);
+        }
+
+        [Fact]
+        public void dir_非目标op不报W409()
+        {
+            // AppliesTo 边界:dir 对 plane 类 op 无意义,不应拦(解析在公共段,不会因 op 而漏解,
+            // 故此处 False 真实反映 AppliesTo 生效,非空洞断言)
+            var r = V("[{\"op\":\"plane\",\"dir\":[0,1]}]");
+            Assert.False(Has(r, "W409"));
+        }
+
+        [Fact]
+        public void expectvolumedelta_数组含非数字_E418报错()
+        {
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"RefPlane_1\",\"depth\":0.05,\"rect\":[[0,0],[0.04,0.04]],\"expectvolumedelta\":[\"a\",1]}]");
+            Assert.True(Has(r, "E418"));
+            Assert.Equal("error", r.status);
+        }
+
+        [Fact]
+        public void expectvolumedelta_标量与逆序区间_不报E418()
+        {
+            // 标量写法合法;区间逆序由解析层 Math.Min/Max 归一,同样合法
+            var r1 = V("[{\"op\":\"extrude\",\"plane\":\"RefPlane_1\",\"depth\":0.05,\"rect\":[[0,0],[0.04,0.04]],\"expectvolumedelta\":1200}]");
+            var r2 = V("[{\"op\":\"extrude\",\"plane\":\"RefPlane_1\",\"depth\":0.05,\"rect\":[[0,0],[0.04,0.04]],\"expectvolumedelta\":[-1200,-1300]}]");
+            Assert.False(Has(r1, "E418"));
+            Assert.False(Has(r2, "E418"));
         }
     }
 }

@@ -41,6 +41,23 @@ namespace SolidEdge.Spy.McpServer.Tools
         /// <summary>"plane" 字段(草图所在面)。</summary>
         public string PlaneRef;
 
+        /// <summary>
+        /// plane 的面锚定声明(2026-10-03):plane 写 "face:&lt;Face.ID&gt;" 或 "face:±X/±Y/±Z" 时非 null。
+        /// 语义由 Coords 决定(2026-10-04 扩展):
+        ///   coords 缺省/"global" → 轮廓坐标为【全局世界坐标】,由执行层投影到该面所在平面
+        ///     (世界 2D 语义:法向 Z→(X,Y)、法向 X→(Y,Z)、法向 Y→(X,Z));仅支持轴向面。
+        ///   coords "local" → 轮廓坐标为【该面贴面参考平面的局部 u/v】(与普通 RefPlane 草图同构),
+        ///     不投影、不绕向归一;支持任意平面面(含斜面),原点/轴向由 SE 决定。
+        /// null = 不是 face 来源(走 RefPlane_N / @别名 / obj-K)。
+        /// </summary>
+        public FacePlaneRef FacePlaneRef;
+
+        /// <summary>coords 字段原始值(小写);null = 未给(= global)。</summary>
+        public string Coords;
+
+        /// <summary>coords:"local" → true(轮廓按面局部 u/v 解释)。仅对 face 平面有意义,由校验层把关。</summary>
+        public bool CoordsLocal;
+
         /// <summary>"base" 字段(plane op 的基准面)。</summary>
         public string BaseRef;
 
@@ -57,6 +74,33 @@ namespace SolidEdge.Spy.McpServer.Tools
 
         /// <summary>ProfileSide。null = 未给,由 op 套默认值。</summary>
         public int? ProfileSide;
+
+        /// <summary>
+        /// 挤出/除料方向(世界坐标,单位向量,2026-09-29 新增):给了 dir 且未显式给 side 时,
+        /// 构建器用平面带符号法向 dot(dir, n) 直接算 side(>0→2,<0→1),不再依赖默认值/自动重试猜方向。
+        /// 带符号法向的已知来源:RefPlane_1=+Z、RefPlane_2=+X、RefPlane_3=−Y(2026-09-28 挤出探针实测);
+        /// plane op 派生面继承基准面法向。其它来源(obj-K 引用的外部面)解析不到 → 回退默认 side 并带 warning。
+        /// </summary>
+        public double[] Dir;
+
+        /// <summary>是否提供了有效的 dir(3 个数字)。</summary>
+        public bool HasDir;
+
+        /// <summary>dir 解析失败原因;null = 可用(未给 dir 也为 null)。</summary>
+        public string DirParseError;
+
+        // ---- 体积对账(2026-09-29 新增,extrude/cut/hole 通用) ----
+
+        /// <summary>调用方声明的模型体积增量区间(毫米³)。extrude>0、cut/hole<0;null = 未声明不校验。</summary>
+        public double? ExpectVolMin;
+
+        public double? ExpectVolMax;
+
+        /// <summary>是否声明了体积增量期望(给了 expectvolumedelta)。</summary>
+        public bool HasExpectVol;
+
+        /// <summary>expectvolumedelta 解析失败原因;null = 可用。</summary>
+        public string ExpectVolParseError;
 
         /// <summary>cut 的除料方式:next / all / finite;缺失时为 null(op 套 "next")。</summary>
         public string Mode;
@@ -146,6 +190,15 @@ namespace SolidEdge.Spy.McpServer.Tools
         /// (≥2 点,不自动闭合);null=不是开放链。局部 u/v,米。
         /// </summary>
         public double[][] OpenChain;
+
+        /// <summary>
+        /// 显式路径段列(sweep 首项专用,trace 字段,2026-10-04):线段 + 真圆弧混排;
+        /// null = 未声明 trace(回退 polygon 开放链或闭合轮廓)。与 OpenChain/形状字段互斥。
+        /// </summary>
+        public List<PathSegment> Trace;
+
+        /// <summary>trace 字段存在但解析失败时的原因;null = 无问题(含"未给 trace")。</summary>
+        public string TraceError;
 
         // ---- P3 面引用机制(2026-09-23):draft / thicken / delete_face ----
 
@@ -275,6 +328,32 @@ namespace SolidEdge.Spy.McpServer.Tools
     }
 
     /// <summary>
+    /// plane 字段的"面锚定"声明(2026-10-03 IR 面平面:extrude / cut / hole)。
+    /// 两种写法:
+    ///   "face:26"  → Kind=Id,   FaceId=26      (按 Face.ID 直接定位)
+    ///   "face:+Z"  → Kind=Axis, Axis="+Z"      (±X/±Y/±Z 轴向选择器)
+    /// 坐标语义由顶层 coords 字段决定(2026-10-04):
+    ///   缺省/"global" → 全局世界坐标,执行层投影(仅轴向面);
+    ///   "local"       → 该面贴面参考平面的局部 u/v,不投影(支持斜面)。
+    /// Kind=Axis 时正负号【不参与匹配】(投影法只能定出法向轴、定不出朝向):
+    /// 在法向轴为 Z 的面里取面积最大者;若同时存在两个同向面则报错,要求改用 face:&lt;ID&gt;。
+    /// </summary>
+    public sealed class FacePlaneRef
+    {
+        /// <summary>引用种类:"Id" 或 "Axis"。</summary>
+        public string Kind;
+
+        /// <summary>Kind=Id 时的 Face.ID。</summary>
+        public int FaceId;
+
+        /// <summary>Kind=Axis 时的规范轴向符号:"+X"/"-X"/"+Y"/"-Y"/"+Z"/"-Z"。</summary>
+        public string Axis;
+
+        /// <summary>解析失败原因;null = 可用。</summary>
+        public string ParseError;
+    }
+
+    /// <summary>
     /// 直线长度标注声明。"element" 是跨环扁平的 0-based 线索引(第 0 环的线排最前,轴/构造线不占位)。
     /// "name" → PutName 进变量表(标注即变量);"value" → 直接值(如 "40 mm");"formula" → 公式(如 "Rad1 - 5 mm")。
     /// </summary>
@@ -293,6 +372,25 @@ namespace SolidEdge.Spy.McpServer.Tools
     }
 
     /// <summary>
+    /// sweep 路径的一段(trace 数组元素,2026-10-04):直线或【真圆弧】。
+    /// 局部 u/v,米。与 polygon 折线不同,圆弧走 Arcs2d.AddByCenterStartEnd(真弧,不留折棱)。
+    /// </summary>
+    public sealed class PathSegment
+    {
+        /// <summary>"line" 或 "arc"。</summary>
+        public string Kind;
+
+        /// <summary>line 起点 / arc 起点(局部 u/v,米)。</summary>
+        public double[] P0;
+
+        /// <summary>line 终点 / arc 终点(局部 u/v,米)。</summary>
+        public double[] P1;
+
+        /// <summary>arc 圆心(仅 arc;局部 u/v,米)。</summary>
+        public double[] Center;
+    }
+
+    /// <summary>
     /// features JSON → FeatureSpec 的解析器。
     ///
     /// 纯函数、不碰 COM,SE 没启动也能跑——这是校验层能"事前拦截"的前提。
@@ -305,6 +403,8 @@ namespace SolidEdge.Spy.McpServer.Tools
             {
                 "op", "name", "plane", "base", "distance", "depth",
                 "side", "profileside", "mode", "visible",
+                "coords",   // 2026-10-04:face 平面坐标模式 global(默认)|local(面局部 u/v,支持斜面)
+                "dir", "expectvolumedelta",   // 2026-09-29:显式方向 + 体积对账(extrude/cut/hole)
                 "circle", "circles", "slot", "rect", "polygon", "loops",
                 "axis", "angle", "degrees",   // revolve 专用
                 "autoconstraint", "fixorigin", "dims",   // 2026-09-13:完全约束+变量绑定(End 前应用)
@@ -317,6 +417,8 @@ namespace SolidEdge.Spy.McpServer.Tools
                 "diameter", "center", "method",
                 // 2026-09-23 P2 多轮廓:loft / sweep / helix
                 "profiles", "origin", "pitch", "height", "revolutions",
+                "trace",   // 2026-10-04:sweep 路径的线段+真圆弧混排声明(profiles[0] 专用)
+                "fillet",  // 2026-10-04:sweep 路径的圆角半径(配 polygon 顶点链,自动求切弧)
                 // 2026-09-23 P3 面引用机制:draft / thicken / delete_face / split / web_network
                 "faceOf", "faceNormal", "faceIndex", "confirm", "target"
             };
@@ -341,6 +443,15 @@ namespace SolidEdge.Spy.McpServer.Tools
             s.OpLower = s.Op.ToLowerInvariant();
             s.Name = GetStr(feat, "name");
             s.PlaneRef = GetStr(feat, "plane");
+            s.FacePlaneRef = ParseFacePlaneRef(s.PlaneRef);   // 2026-10-03:plane 的面锚定("face:26" / "face:+Z")
+            // 2026-10-04:coords(global 默认|local 面局部 u/v)。原始值(小写)存 s.Coords 供校验层报非法值;
+            // 这里只认 "local",其它字符串不在此报错。
+            string coordsRaw = GetStr(feat, "coords");
+            if (coordsRaw != null)
+            {
+                s.Coords = coordsRaw.ToLowerInvariant();
+                s.CoordsLocal = s.Coords == "local";
+            }
             s.BaseRef = GetStr(feat, "base");
             s.Mode = GetStr(feat, "mode") ?? GetStr(feat, "method");   // hole 可用 method 作 mode 别名
             s.EndMode = GetStr(feat, "endmode");
@@ -377,6 +488,43 @@ namespace SolidEdge.Spy.McpServer.Tools
             if (TryGetDbl(feat, "thickness", out double thk)) s.Thickness = thk;
             if (TryGetInt(feat, "side", out int sd)) s.Side = sd;
             if (TryGetInt(feat, "profileside", out int ps)) s.ProfileSide = ps;
+
+            // 2026-09-29:dir(世界坐标 3 分量方向向量)+ expectvolumedelta(模型体积增量区间,毫米³)
+            if (feat.TryGetProperty("dir", out var dirEl))
+            {
+                if (dirEl.ValueKind == JsonValueKind.Array && dirEl.GetArrayLength() == 3
+                    && TryGetNum(dirEl[0], out double dx) && TryGetNum(dirEl[1], out double dy) && TryGetNum(dirEl[2], out double dz))
+                {
+                    double len = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+                    if (len > 1e-12)
+                    {
+                        s.Dir = new[] { dx / len, dy / len, dz / len };   // 归一化,后续 dot 只看符号
+                        s.HasDir = true;
+                    }
+                    else
+                        s.DirParseError = "dir 是零向量";
+                }
+                else
+                    s.DirParseError = "dir 必须是 3 个数字的数组,如 \"dir\":[0,0,1]";
+            }
+            if (feat.TryGetProperty("expectvolumedelta", out var evdEl))
+            {
+                if (evdEl.ValueKind == JsonValueKind.Number && evdEl.TryGetDouble(out double ev1))
+                {
+                    s.ExpectVolMin = ev1;
+                    s.ExpectVolMax = ev1;
+                    s.HasExpectVol = true;
+                }
+                else if (evdEl.ValueKind == JsonValueKind.Array && evdEl.GetArrayLength() == 2
+                    && TryGetNum(evdEl[0], out double evMin) && TryGetNum(evdEl[1], out double evMax))
+                {
+                    s.ExpectVolMin = Math.Min(evMin, evMax);
+                    s.ExpectVolMax = Math.Max(evMin, evMax);
+                    s.HasExpectVol = true;
+                }
+                else
+                    s.ExpectVolParseError = "expectvolumedelta 必须是数字或 [下限,上限](毫米³),如 \"expectvolumedelta\":-1250 或 [-1300,-1200]";
+            }
             if (TryGetInt(feat, "xcount", out int xc)) s.XCount = xc;
             if (TryGetInt(feat, "ycount", out int yc)) s.YCount = yc;
             if (TryGetDbl(feat, "xspacing", out double xs)) s.XSpacing = xs;
@@ -451,22 +599,68 @@ namespace SolidEdge.Spy.McpServer.Tools
                 }
             }
 
-            // sweep 的首项是路径(path):polygon 按【开放链】解释(≥2 点,不闭合);
+            // sweep 的首项是路径(path):trace 走【线段+真圆弧混排】,polygon 按【开放链】解释(≥2 点,不闭合);
             // circle/rect/loops/slot 仍按闭合轮廓(闭合路径 = 扫一整圈)。其余 op 的 polygon 恒为闭合。
             if (s.OpLower == "sweep" && s.HasProfiles && s.Profiles.Count > 0)
             {
                 var pathSpec = s.Profiles[0];
+                bool hasFillet = pathSpec.Raw.ValueKind == JsonValueKind.Object &&
+                    pathSpec.Raw.TryGetProperty("fillet", out _);
                 if (pathSpec.Raw.ValueKind == JsonValueKind.Object &&
+                    pathSpec.Raw.TryGetProperty("trace", out var traceEl))
+                {
+                    var segs = ParseTraceSegments(traceEl, out string traceErr);
+                    if (segs == null)
+                        pathSpec.TraceError = traceErr;
+                    else if (HasAnyShapeKey(pathSpec.Raw))
+                        pathSpec.TraceError = "trace 与 circle/circles/slot/rect/polygon/loops/fillet 互斥,路径只能选一种声明方式";
+                    else
+                    {
+                        pathSpec.Trace = segs;
+                        pathSpec.ShapeError = null;
+                        pathSpec.Loops.Clear();
+                        pathSpec.ShapeSource = "trace(线段/圆弧)";
+                    }
+                }
+                else if (pathSpec.Raw.ValueKind == JsonValueKind.Object &&
                     pathSpec.Raw.TryGetProperty("polygon", out var polyEl) && polyEl.ValueKind == JsonValueKind.Array)
                 {
                     double[][] pts = ParsePointArray(polyEl);
                     if (pts != null && pts.Length >= 2)
                     {
-                        pathSpec.OpenChain = pts;
-                        pathSpec.ShapeError = null;
-                        pathSpec.Loops.Clear();
-                        pathSpec.ShapeSource = "polygon(开放链)";
+                        double fr = 0;
+                        if (hasFillet && !TryGetDbl(pathSpec.Raw, "fillet", out fr))
+                        {
+                            pathSpec.ShapeError = "fillet 必须是数字(圆角半径,米)。";
+                        }
+                        else if (hasFillet && fr > 0)
+                        {
+                            // 顶点链 + 圆角:R 放不下/回折/零长段 → ShapeError,由校验层报出(零 COM 往返)
+                            var filletSegs = BuildFilletTrace(pts, fr, out string ferr);
+                            if (filletSegs == null)
+                            {
+                                pathSpec.ShapeError = ferr;
+                            }
+                            else
+                            {
+                                pathSpec.Trace = filletSegs;
+                                pathSpec.ShapeError = null;
+                                pathSpec.Loops.Clear();
+                                pathSpec.ShapeSource = "polygon+fillet(自动切弧)";
+                            }
+                        }
+                        else
+                        {
+                            pathSpec.OpenChain = pts;
+                            pathSpec.ShapeError = null;
+                            pathSpec.Loops.Clear();
+                            pathSpec.ShapeSource = "polygon(开放链)";
+                        }
                     }
+                }
+                else if (hasFillet)
+                {
+                    pathSpec.ShapeError = "fillet 只能配 polygon 路径(顶点链 + 圆角半径,圆心由几何算出)。";
                 }
             }
 
@@ -525,6 +719,18 @@ namespace SolidEdge.Spy.McpServer.Tools
             }
 
             return s;
+        }
+
+        /// <summary>闭合轮廓形状字段名(trace 互斥判定用:只要声明过其中之一就不允许再给 trace)。</summary>
+        private static readonly string[] ShapeKeys = { "circle", "circles", "slot", "rect", "polygon", "loops", "fillet" };
+
+        /// <summary>feat 上是否声明过任一闭合轮廓形状字段(不看能否解析成功——声明过即算,避免无效多边形漏检)。</summary>
+        private static bool HasAnyShapeKey(JsonElement feat)
+        {
+            if (feat.ValueKind != JsonValueKind.Object) return false;
+            foreach (var k in ShapeKeys)
+                if (feat.TryGetProperty(k, out _)) return true;
+            return false;
         }
 
         private static string DetectShapeSource(JsonElement feat)
@@ -749,6 +955,48 @@ namespace SolidEdge.Spy.McpServer.Tools
         }
 
         /// <summary>
+        /// 解析 plane 字段的 "face:" 前缀(2026-10-03 IR 面锚定):
+        ///   "face:26"  → Kind=Id,   FaceId=26
+        ///   "face:+Z"  → Kind=Axis, Axis="+Z"(±X/±Y/±Z,大小写不敏感;正负号必须写)
+        /// 非 "face:" 开头返回 null(照旧走 RefPlane_N / @别名 / obj-K);
+        /// 格式非法时返回带 ParseError 的对象,由校验层 E203 报出。
+        /// </summary>
+        public static FacePlaneRef ParseFacePlaneRef(string planeRef)
+        {
+            if (string.IsNullOrEmpty(planeRef)) return null;
+
+            const string prefix = "face:";
+            if (!planeRef.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
+
+            var fr = new FacePlaneRef();
+            string body = planeRef.Substring(prefix.Length).Trim();
+            if (body.Length == 0)
+            {
+                fr.ParseError = "face: 后缺少内容(应为 Face.ID 整数或 ±X/±Y/±Z)";
+                return fr;
+            }
+
+            if (int.TryParse(body, NumberStyles.Integer, CultureInfo.InvariantCulture, out int fid))
+            {
+                if (fid < 0) fr.ParseError = "face:<ID> 的 ID 必须 >= 0";
+                else { fr.Kind = "Id"; fr.FaceId = fid; }
+                return fr;
+            }
+
+            string axis = body.ToUpperInvariant();
+            if (axis.Length == 2 && (axis[0] == '+' || axis[0] == '-') &&
+                (axis[1] == 'X' || axis[1] == 'Y' || axis[1] == 'Z'))
+            {
+                fr.Kind = "Axis";
+                fr.Axis = axis;
+                return fr;
+            }
+
+            fr.ParseError = "face: 后应为 Face.ID 整数或 ±X/±Y/±Z(收到 \"" + body + "\")";
+            return fr;
+        }
+
+        /// <summary>
         /// 解析单条边引用。两种写法:
         ///   {"face":"face:71","edge":0}   (推荐,与 se_read_geometry / 对方项目的 0-based 约定一致)
         ///   {"face":71,"edge":0}          (整数简写)
@@ -883,6 +1131,125 @@ namespace SolidEdge.Spy.McpServer.Tools
             return pts.Count >= 2 ? pts.ToArray() : null;
         }
 
+        /// <summary>
+        /// 解析 trace 段数组(sweep 路径专用):[{"line":[[x,y],[x,y]]}, {"arc":{"center":[x,y],"start":[x,y],"end":[x,y]}}]。
+        /// 段数 == 0 或任一段格式错 → 返回 null 并经 out err 给原因(段号 1-based)。
+        /// arc 方向恒为【逆时针】从 start 走到 end(与 Arcs2d.AddByCenterStartEnd 语义一致,不支持顺时针)。
+        /// </summary>
+        public static List<PathSegment> ParseTraceSegments(JsonElement el, out string err)
+        {
+            err = null;
+            if (el.ValueKind != JsonValueKind.Array || el.GetArrayLength() == 0)
+            {
+                err = "trace 必须是非空数组";
+                return null;
+            }
+
+            var segs = new List<PathSegment>();
+            int i = 0;
+            foreach (var item in el.EnumerateArray())
+            {
+                i++;
+                if (item.ValueKind != JsonValueKind.Object)
+                {
+                    err = "第 " + i + " 段不是对象(应为 {\"line\":...} 或 {\"arc\":...})";
+                    return null;
+                }
+                if (item.TryGetProperty("line", out var lineEl))
+                {
+                    var pts = ParsePointArray(lineEl);
+                    if (pts == null || pts.Length != 2)
+                    {
+                        err = "第 " + i + " 段 line 需要恰好 2 个点 [[x,y],[x,y]]";
+                        return null;
+                    }
+                    segs.Add(new PathSegment { Kind = "line", P0 = pts[0], P1 = pts[1] });
+                }
+                else if (item.TryGetProperty("arc", out var arcEl))
+                {
+                    if (arcEl.ValueKind != JsonValueKind.Object)
+                    {
+                        err = "第 " + i + " 段 arc 必须是对象 {center,start,end}";
+                        return null;
+                    }
+                    double[] c = TryGetPoint2(arcEl, "center");
+                    double[] a = TryGetPoint2(arcEl, "start");
+                    double[] b = TryGetPoint2(arcEl, "end");
+                    if (c == null || a == null || b == null)
+                    {
+                        err = "第 " + i + " 段 arc 需要 center/start/end 三个 [x,y] 点";
+                        return null;
+                    }
+                    segs.Add(new PathSegment { Kind = "arc", Center = c, P0 = a, P1 = b });
+                }
+                else
+                {
+                    err = "第 " + i + " 段既没有 line 也没有 arc";
+                    return null;
+                }
+            }
+            return segs;
+        }
+
+        /// <summary>
+        /// 把【折线顶点链 + 圆角半径】展开成"线段 + 真圆弧"段列(sweep 路径专用,2026-10-04)。
+        /// 圆心与切点全部由几何算出 ⇒ 展开出的圆弧与相邻直段【必然相切】。
+        /// 要做这条通道的原因:让调用方手写 arc 的 center 极易把圆心放到拐角点本身
+        /// (2026-10-04 "弯头不相切"事故的根因),这里把圆心从输入里彻底拿掉。
+        /// R 放不下 / 顶点重合 / 180° 回折 → 返回 null 并给 err(由校验层报出,零 COM 往返)。
+        /// </summary>
+        public static List<PathSegment> BuildFilletTrace(double[][] pts, double r, out string err)
+        {
+            err = null;
+            var segs = new List<PathSegment>();
+            double[] cur = pts[0];
+            double prevT = 0;                       // 上一拐角在本段(入段)上吃掉的长度——防两个圆角重叠
+            for (int i = 1; i < pts.Length - 1; i++)
+            {
+                double[] p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1];
+                double ux = p1[0] - p0[0], uy = p1[1] - p0[1];
+                double vx = p2[0] - p1[0], vy = p2[1] - p1[1];
+                double lu = Math.Sqrt(ux * ux + uy * uy), lv = Math.Sqrt(vx * vx + vy * vy);
+                if (lu < 1e-12 || lv < 1e-12)
+                {
+                    err = "第 " + (i + 1) + " 个顶点与前/后顶点重合(零长段无法倒圆角)。";
+                    return null;
+                }
+                ux /= lu; uy /= lu; vx /= lv; vy /= lv;
+                double cross = ux * vy - uy * vx, dot = ux * vx + uy * vy;
+                if (Math.Abs(cross) < 1e-12 && dot > 0)          // 共线直行:没有拐角
+                {
+                    segs.Add(new PathSegment { Kind = "line", P0 = cur, P1 = p1 });
+                    cur = p1; prevT = 0;
+                    continue;
+                }
+                if (Math.Abs(cross) < 1e-12)                      // dot<0 → 180° 回折
+                {
+                    err = "第 " + (i + 1) + " 个顶点处是 180° 回折,无法倒圆角。";
+                    return null;
+                }
+                double delta = Math.Atan2(cross, dot);            // 转向角,右转为负
+                double t = r * Math.Tan(Math.Abs(delta) / 2.0);   // 切点到顶点的距离
+                if (prevT + t > lu - 1e-12 || t > lv - 1e-12)
+                {
+                    err = "第 " + (i + 1) + " 个顶点放不下 R=" + r.ToString("G6", CultureInfo.InvariantCulture) +
+                          " 的圆角(切点距顶点 " + t.ToString("G6", CultureInfo.InvariantCulture) +
+                          ",相邻段长 " + lu.ToString("G6", CultureInfo.InvariantCulture) +
+                          "/" + lv.ToString("G6", CultureInfo.InvariantCulture) + ")。";
+                    return null;
+                }
+                double[] a = { p1[0] - ux * t, p1[1] - uy * t };  // 入切点
+                double[] b = { p1[0] + vx * t, p1[1] + vy * t };  // 出切点
+                double[] n = delta < 0 ? new[] { uy, -ux } : new[] { -uy, ux };   // 右转取右侧法向
+                double[] c = { a[0] + n[0] * r, a[1] + n[1] * r };                // 圆心
+                segs.Add(new PathSegment { Kind = "line", P0 = cur, P1 = a });
+                segs.Add(new PathSegment { Kind = "arc", P0 = a, P1 = b, Center = c });
+                cur = b; prevT = t;
+            }
+            segs.Add(new PathSegment { Kind = "line", P0 = cur, P1 = pts[pts.Length - 1] });
+            return segs;
+        }
+
         // ---------------- 取值原语(nullable 版:区分"没给"与"给了 0") ----------------
 
         private static string GetStr(JsonElement e, string key)
@@ -899,6 +1266,21 @@ namespace SolidEdge.Spy.McpServer.Tools
             if (v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d)) { val = d; return true; }
             if (v.ValueKind == JsonValueKind.String &&
                 double.TryParse(v.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var d2))
+            { val = d2; return true; }
+            return false;
+        }
+
+        /// <summary>
+        /// 数组元素取数。⚠️ JsonElement.TryGetDouble 在元素【不是 Number 时会抛 InvalidOperationException】,
+        /// 不是返回 false——直接对 dir[i]/expectvolumedelta[i] 调它,会让"格式写错"从"报 W409/E418"变成
+        /// "静态校验整个崩掉"。必须先判 ValueKind。语义与 TryGetDbl 一致(容忍数字字符串)。
+        /// </summary>
+        private static bool TryGetNum(JsonElement e, out double val)
+        {
+            val = 0;
+            if (e.ValueKind == JsonValueKind.Number) return e.TryGetDouble(out val);
+            if (e.ValueKind == JsonValueKind.String &&
+                double.TryParse(e.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var d2))
             { val = d2; return true; }
             return false;
         }

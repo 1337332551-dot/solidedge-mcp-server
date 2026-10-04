@@ -318,6 +318,78 @@ public static class GeometryTools
 		};
 	}
 
+	/// <summary>
+	/// face 平面的"全局 2D → 平面局部 (u,v)"仿射映射(2026-10-03 IR 面锚定)。
+	/// 世界 2D 语义:外法向轴 Z→(X,Y)、X→(Y,Z)、Y→(X,Z);第三坐标取 0
+	/// (投影沿法向,第三坐标不影响结果)。
+	/// 与 <see cref="ProbePlaneNormal"/> 同机制:把世界原点与三个单位轴投到平面局部坐标,
+	/// 投影长度最小的轴即法向轴;非法向面(斜面)直接拒绝。
+	/// </summary>
+	internal sealed class FacePlaneMap
+	{
+		/// <summary>外法向轴字母(X/Y/Z)。</summary>
+		internal string NormalAxis;
+
+		private readonly double[] _o;
+		private readonly double[] _e1;
+		private readonly double[] _e2;
+
+		private FacePlaneMap(string axis, double[] o, double[] e1, double[] e2)
+		{
+			NormalAxis = axis;
+			_o = o;
+			_e1 = e1;
+			_e2 = e2;
+		}
+
+		/// <summary>把全局 2D 坐标 (a,b) 映射成贴面参考平面的局部 (u,v)。</summary>
+		internal double[] Map(double a, double b)
+		{
+			return new double[2]
+			{
+				_o[0] + a * _e1[0] + b * _e2[0],
+				_o[1] + a * _e1[1] + b * _e2[1]
+			};
+		}
+
+		/// <summary>
+		/// 在【调用方已建好的 Profile】上求仿射基(原点 + 两个面内轴向量),不创建/删除任何临时对象。
+		/// 非轴向面(斜面)抛异常。
+		///
+		/// ★ 2026-10-03 实测(真机 E2E):早先的实现会临时建一个 ProfileSet(``Profiles.Add(plane)``)、
+		///   投影完再 ``ProfileSet.Delete()`` 掉;结果把那张贴面参考平面的 RCW 弄成
+		///   CO_E_OBJNOTCONNECTED(Invoke 报 0x800401FD,puArgErr=0),随后同一张平面的
+		///   ``Profiles.Add(plane)`` 直接失败、连回滚删平面也一并挂掉。故改为复用调用方自己的 profile。
+		/// </summary>
+		internal static FacePlaneMap BuildFromProfile(object profile)
+		{
+			double[] o = Convert3D(profile, 0.0, 0.0, 0.0);
+			double[] ex = Convert3D(profile, 1.0, 0.0, 0.0);
+			double[] ey = Convert3D(profile, 0.0, 1.0, 0.0);
+			double[] ez = Convert3D(profile, 0.0, 0.0, 1.0);
+
+			double lx = Dist2D(ex, o);
+			double ly = Dist2D(ey, o);
+			double lz = Dist2D(ez, o);
+			double min = Math.Min(lx, Math.Min(ly, lz));
+			if (min > 1E-06)
+			{
+				throw new ArgumentException(
+					"该实体面不是轴向面(外法向不沿全局 X/Y/Z),全局 2D 轮廓坐标在斜面上无定义。" +
+					"请改用 \"coords\":\"local\"(坐标为该面局部 u/v,支持斜面)或脚本。");
+			}
+
+			if (min == lx) return new FacePlaneMap("X", o, Sub(ey, o), Sub(ez, o));
+			if (min == ly) return new FacePlaneMap("Y", o, Sub(ex, o), Sub(ez, o));
+			return new FacePlaneMap("Z", o, Sub(ex, o), Sub(ey, o));
+		}
+
+		private static double[] Sub(double[] p, double[] q)
+		{
+			return new double[2] { p[0] - q[0], p[1] - q[1] };
+		}
+	}
+
 	internal static bool IsOrientationName(string s)
 	{
 		if (!string.IsNullOrWhiteSpace(s))

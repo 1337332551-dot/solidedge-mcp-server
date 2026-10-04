@@ -357,7 +357,7 @@ internal static class CliRunner
 			{
 				if (args.Length < 2)
 				{
-					Console.WriteLine("缺少脚本路径。用法: solidedge-mcp --cs <脚本.cs> [超时秒]");
+					Console.WriteLine("缺少脚本路径。用法: solidedge-mcp --cs <脚本.cs> [超时秒] [脚本参数 k=v ...]");
 					result = 1;
 					break;
 				}
@@ -372,7 +372,14 @@ internal static class CliRunner
 					Path.GetFileNameWithoutExtension(csFile), "[^A-Za-z0-9_\\-]", "_");
 				string scriptCode = File.ReadAllText(csFile);
 				int scriptTimeout = (args.Length >= 3 && int.TryParse(args[2], out int t) && t > 0) ? t : 60;
-				Console.WriteLine(ScriptTools.se_script_run(context, scriptName, scriptCode, timeoutSec: scriptTimeout));
+				// 超时秒之后的参数原样透传给脚本 Main(string[] args)(脚本库的 params: 约定靠它)
+				string[] scriptArgs = null;
+				if (args.Length > 3)
+				{
+					scriptArgs = new string[args.Length - 3];
+					Array.Copy(args, 3, scriptArgs, 0, scriptArgs.Length);
+				}
+				Console.WriteLine(ScriptTools.se_script_run(context, scriptName, scriptCode, timeoutSec: scriptTimeout, scriptArgs: scriptArgs));
 				result = 0;
 				break;
 			}
@@ -546,7 +553,10 @@ internal static class CliRunner
 		default:
 			return null; // 其余 CLI 命令均为只读查询或本地文件操作
 		}
-		return "[CLI] " + ToolRisk.Check(tool);
+		// ⚠️ Check() 放行时返回 null;直接拼字符串会把 null 变成 "[CLI] " 这个【非 null】结果,
+		//    被上层当成"有拒绝理由",于是 engineer 模式下所有写命令都被空消息误拒(2026-10-01 实测)。
+		string reason = ToolRisk.Check(tool);
+		return (reason == null) ? null : "[CLI] " + reason;
 	}
 
 	private static string Probe(SolidEdgeContext context)
