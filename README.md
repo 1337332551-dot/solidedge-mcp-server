@@ -93,7 +93,7 @@ There is also a member-level guardrail (`Guardrail`) as a second onion layer, an
 ## Requirements
 
 - Windows + a running **Siemens Solid Edge** install (interop package targets SE2022 / type library v108; other versions may work — see below)
-- **.NET 8 SDK** to build, or use a published binary
+- **.NET 8 SDK** to build, or download a [published release](https://github.com/1337332551-dot/solidedge-mcp-server/releases/latest) — self-contained, no .NET runtime needed
 - An MCP-capable AI client
 
 ## Build
@@ -232,8 +232,8 @@ The feature-spec JSON — the intermediate representation (IR) that `se_model_bu
 ## Roadmap
 
 - [ ] Stabilize the feature-spec IR (v1)
-- [ ] Published Release binaries (no SDK needed to try)
-- [ ] GitHub Actions CI (build + test on push)
+- [x] Published Release binaries (no SDK needed to try)
+- [x] GitHub Actions CI (build + test on push)
 - [ ] More recipe examples (drawing automation, BOM extraction)
 - [ ] Tool documentation site
 

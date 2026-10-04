@@ -93,7 +93,7 @@ _一次建模过程：AI 通过 MCP 驱动 Solid Edge 一步步把模型建出�
 ## 环境要求
 
 - Windows + 已安装并可运行的 **Siemens Solid Edge**（互操作包对应 SE2022 / 类型库 v108；其他版本见下文说明）
-- **.NET 8 SDK**（自己编译），或直接用 Release 二进制
+- **.NET 8 SDK**（自己编译），或直接下载 [Release 二进制](https://github.com/1337332551-dot/solidedge-mcp-server/releases/latest)——自包含，连 .NET 运行时都不用装
 - 一个支持 MCP 的 AI 客户端
 
 ## 构建
@@ -232,8 +232,8 @@ MCP server 由 AI 客户端在会话启动时拉起，任何 `mcp.json` 改动�
 ## Roadmap
 
 - [ ] 稳定 features IR（v1）
-- [ ] 发布 Release 二进制（不用装 SDK 也能试用）
-- [ ] GitHub Actions CI（push 时自动 build + test）
+- [x] 发布 Release 二进制（不用装 SDK 也能试用）
+- [x] GitHub Actions CI（push 时自动 build + test）
 - [ ] 更多配方示例（出图自动化、BOM 提取）
 - [ ] 工具文档站
 
