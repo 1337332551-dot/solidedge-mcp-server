@@ -1,0 +1,42 @@
+{
+  "name": "revolve_circle_profile",
+  "title": "旋转：圆轮廓 + 轴直线新建 Model（SetAxisOfRevolution + End(17) + AddFiniteRevolvedProtrusion）",
+  "version": 1,
+  "status": "draft",
+  "risk": "modelChanging",
+  "anchoredTo": { "se": "2022", "sourceDoc": "part" },
+  "inputs": [
+    { "name": "target", "type": "object", "required": true, "desc": "起始对象=文档句柄（se_get_selection 空选中回退登记 ActiveDocument 为 obj-1）" },
+    { "name": "circleX", "type": "double", "unit": "m", "required": true, "desc": "旋转截面圆心 u" },
+    { "name": "circleY", "type": "double", "unit": "m", "required": true, "desc": "旋转截面圆心 v" },
+    { "name": "radius", "type": "double", "unit": "m", "required": true, "desc": "旋转截面半径" },
+    { "name": "axisX2", "type": "double", "unit": "m", "default": "0.1", "desc": "旋转轴终点 u（起点固定为 0,0）" },
+    { "name": "axisY2", "type": "double", "unit": "m", "default": "0", "desc": "旋转轴终点 v" },
+    { "name": "angle", "type": "double", "unit": "rad", "default": "6.283185307179586", "desc": "旋转角（弧度）；默认 2π = 整圈" },
+    { "name": "profileSide", "type": "int", "default": "2", "desc": "ProfileSide；实测 2 有效" },
+    { "name": "refPlaneIndex", "type": "int", "default": "1", "desc": "RefPlanes.Item(i) 的 i" }
+  ],
+  "preconditions": [
+    { "kind": "handleExists", "hint": "target 必须是句柄表里存在的 obj-N（先 se_get_selection）" },
+    { "kind": "docKind", "value": "part", "hint": "仅零件文档" }
+  ],
+  "steps": [
+    { "member": "ProfileSets", "on": "{{target}}" },
+    { "member": "Add", "on": "$1" },
+    { "member": "Profiles", "on": "$2" },
+    { "member": "RefPlanes", "on": "{{target}}" },
+    { "member": "Item", "on": "$4", "args": ["{{refPlaneIndex}}"] },
+    { "member": "Add", "on": "$3", "args": ["$5"] },
+    { "member": "Circles2d", "on": "$6" },
+    { "member": "AddByCenterRadius", "on": "$7", "args": ["{{circleX}}", "{{circleY}}", "{{radius}}"] },
+    { "member": "Lines2d", "on": "$6" },
+    { "member": "AddBy2Points", "on": "$9", "args": ["0", "0", "{{axisX2}}", "{{axisY2}}"] },
+    { "member": "SetAxisOfRevolution", "on": "$6", "args": ["$10"] },
+    { "member": "End", "on": "$6", "args": ["17"] },
+    { "member": "Models", "on": "{{target}}" },
+    { "member": "AddFiniteRevolvedProtrusion", "on": "$13", "args": ["1", "@arr:$6", "$11", "{{profileSide}}", "{{angle}}"] }
+  ],
+  "verification": { "kind": "snapshotDiff", "name": "before_revolve", "expect": "diff 显示 Models 集合新增 1 项" },
+  "derivedFrom": "se-query-recipes/knowledge/modeling-recipes-project.md「旋转体完整 chain（实测 Faces=1 有效）」",
+  "notes": "End 的参数 17 是 igProfileForRevolve 固定枚举，勿改。圆轮廓与贴轴闭合直线母线均可（该文档 2026-08-25 多台阶轴）。整链必须一次执行完。"
+}

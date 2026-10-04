@@ -1,0 +1,39 @@
+{
+  "name": "dim_drive_geom",
+  "title": "参数化驱动验证：驱动尺寸 SetValueEx 改值 + 回读几何跟随（2026-09-14 实测 40→50mm 闭环）",
+  "version": 1,
+  "status": "draft",
+  "risk": "modelChanging",
+  "anchoredTo": { "se": "2022", "sourceDoc": "part" },
+  "inputs": [
+    { "name": "target", "type": "object", "required": true, "desc": "起始对象=零件文档句柄（先 se_get_selection）" },
+    { "name": "protrusionIndex", "type": "int", "default": "2", "desc": "ExtrudedProtrusions.Item(i)；本配方针对 se_model_build 带 dims 建出的特征（默认第 2 个=基板 1 之后的新凸台）" },
+    { "name": "dimIndex", "type": "int", "default": "1", "desc": "Profile.Dimensions.Item(i)；dims 数组第一个 element 在实测中转成了驱动尺寸（status=3/constraint=True），即为本配方的目标" },
+    { "name": "newValue", "type": "double", "unit": "m", "default": "0.05", "desc": "SetValueEx(v, 1) 的新值（米）。实测 0.04→0.05 成功，几何跟随" }
+  ],
+  "preconditions": [
+    { "kind": "handleExists", "hint": "target 必须是句柄表里存在的 obj-N（先 se_get_selection）" },
+    { "kind": "docKind", "value": "part", "hint": "仅零件文档" }
+  ],
+  "steps": [
+    { "member": "Models", "on": "{{target}}" },
+    { "member": "Item", "on": "$1", "args": ["1"] },
+    { "member": "ExtrudedProtrusions", "on": "$2" },
+    { "member": "Item", "on": "$3", "args": ["{{protrusionIndex}}"] },
+    { "member": "Profile", "on": "$4" },
+    { "member": "Dimensions", "on": "$5" },
+    { "member": "Item", "on": "$6", "args": ["{{dimIndex}}"] },
+    { "member": "Value", "on": "$7", "args": [] },
+    { "member": "StatusOfDimension", "on": "$7", "args": [] },
+    { "member": "Constraint", "on": "$7", "args": [] },
+    { "member": "SetValueEx", "on": "$7", "args": ["{{newValue}}", "1"] },
+    { "member": "Value", "on": "$7", "args": [] },
+    { "member": "Profile", "on": "$4", "args": [] },
+    { "member": "Lines2d", "on": "$13" },
+    { "member": "Item", "on": "$14", "args": ["1"] },
+    { "member": "Length", "on": "$15", "args": [] }
+  ],
+  "verification": { "kind": "snapshotDiff", "name": "before_dim_drive", "expect": "驱动尺寸 Value 从旧值变为 {{newValue}}（Step8 读旧值、Step12 读新值应= {{newValue}}），且第一条线 Length 跟随变化（驱动尺寸 status=3 才成立；从动尺寸 status=4 改不动几何）。回读丰度：Step8/9/10 = 驱动前提（3/True），Step16 = 几何闭环证据" },
+  "derivedFrom": "knowledge/EXPERIENCE.md 2026-09-14 参数化建模实测（sandbox.par：DIM[1] status=3/constraint=True，SetValueEx(0.05,1) 后 Line2d.Length 40→50mm）",
+  "notes": "⚠️ 2026-09-14 实测的已知限制：se_model_build 的 dims 只有第一个 element 转成驱动尺寸（StatusOfDimension=3/Constraint=True），第二个仍是从动（status=4）且 dims.name 未生效（变量表无 w/h）——本配方只承诺驱动第一条。SetValueEx 必须双参数 (value, 1)，单参数版报 TargetInvocationException 不是功能问题。改值会触发重算，改动后请回读验证几何。"
+}

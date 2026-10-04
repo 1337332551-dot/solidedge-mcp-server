@@ -1,0 +1,28 @@
+{
+  "name": "read_part_overview",
+  "title": "读零件概览：Models / 拉伸特征 / 除料特征 的计数（一次调用看清零件规模）",
+  "version": 1,
+  "status": "draft",
+  "risk": "normal",
+  "anchoredTo": { "se": "2022", "sourceDoc": "part" },
+  "inputs": [
+    { "name": "target", "type": "object", "required": true, "desc": "起始对象=文档句柄" },
+    { "name": "modelIndex", "type": "int", "default": "1", "desc": "Models.Item(i)" }
+  ],
+  "preconditions": [
+    { "kind": "handleExists", "hint": "target 必须是句柄表里存在的 obj-N（先 se_get_selection）" },
+    { "kind": "docKind", "value": "part", "hint": "仅零件文档（装配/图纸没有 Models 集合）" }
+  ],
+  "steps": [
+    { "member": "Models", "on": "{{target}}" },
+    { "member": "Count", "on": "$1" },
+    { "member": "Item", "on": "$1", "args": ["{{modelIndex}}"] },
+    { "member": "ExtrudedProtrusions", "on": "$3" },
+    { "member": "Count", "on": "$4" },
+    { "member": "ExtrudedCutouts", "on": "$3" },
+    { "member": "Count", "on": "$6" }
+  ],
+  "verification": { "kind": "none", "name": "", "expect": "只读配方；跑完看返回 steps 里的 Count 值" },
+  "derivedFrom": "se-query-recipes/knowledge/modeling-recipes-project.md「查询命令坑位」+「清理」节的 Models/ProfileSets 计数用法",
+  "notes": "前提是零件里已经有 Model（第 3 步 Item(modelIndex) 在空零件上会越界失败，报错会指明是第 3 步）。四个 Count 分别对应 Models / 拉伸 / 除料；$2 是 Models.Count，$5 是拉伸数，$7 是除料数。"
+}

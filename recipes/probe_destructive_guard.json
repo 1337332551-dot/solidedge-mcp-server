@@ -1,0 +1,22 @@
+{
+  "name": "probe_destructive_guard",
+  "title": "【护栏自检专用】含破坏性步骤，用于验证 se_recipe_run 会在执行前拦截并原文列出危险步骤",
+  "version": 1,
+  "status": "draft",
+  "risk": "destructive",
+  "anchoredTo": { "se": "2022", "sourceDoc": "part" },
+  "inputs": [
+    { "name": "target", "type": "object", "required": true, "desc": "起始对象=文档句柄" }
+  ],
+  "preconditions": [
+    { "kind": "handleExists", "hint": "target 必须是句柄表里存在的 obj-N（先 se_get_selection）" }
+  ],
+  "steps": [
+    { "member": "Models", "on": "{{target}}" },
+    { "member": "Item", "on": "$1", "args": ["9999"] },
+    { "member": "Delete", "on": "$2" }
+  ],
+  "verification": { "kind": "none", "name": "", "expect": "不带 confirm 调用时必须被拒绝，并在 destructiveSteps 里列出 step 3" },
+  "derivedFrom": "本仓库护栏设计（Guardrail.cs + RecipeTools.CheckRecipeRisk）",
+  "notes": "【用途】只用来验证护栏，不是业务配方。正确行为：se_recipe_run 不带 confirm 调用时，在执行前被拒绝，并把第 3 步的 Delete 原文列出来。即使误加 confirm=true 也不会删除任何东西——第 2 步 Item(9999) 必定越界失败，链在到达第 3 步之前就中断了。"
+}

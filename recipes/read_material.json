@@ -1,0 +1,23 @@
+{
+  "name": "read_material",
+  "title": "读材质：走到 Material 属性对象（供随后 se_describe_object 读 Value）",
+  "version": 1,
+  "status": "draft",
+  "risk": "normal",
+  "anchoredTo": { "se": "2022", "sourceDoc": "part" },
+  "inputs": [
+    { "name": "target", "type": "object", "required": true, "desc": "起始对象=文档句柄" }
+  ],
+  "preconditions": [
+    { "kind": "handleExists", "hint": "target 必须是句柄表里存在的 obj-N（先 se_get_selection）" },
+    { "kind": "docKind", "value": "part", "hint": "仅零件文档。实测：装配文档也有 Properties 集合，但索引 7 不是 MechanicalModeling，跑到第 2 步会 RPC_E_SERVERFAULT —— 所以必须前置拦下" }
+  ],
+  "steps": [
+    { "member": "Properties", "on": "{{target}}" },
+    { "member": "Item", "on": "$1", "args": ["7"] },
+    { "member": "Item", "on": "$2", "args": ["Material"] }
+  ],
+  "verification": { "kind": "none", "name": "", "expect": "只读配方；跑完对返回的 $3 句柄调 se_describe_object 读 Value 即可" },
+  "derivedFrom": "se-sdk-docs/knowledge/mcp-tools.md「1.3 工具用法要点」材质名读取",
+  "notes": "必须用索引 7 取属性集（PropertySets.Item(7) = MechanicalModeling）；按名字取集会报 RPC_E_SERVERFAULT。本配方只走到 Material 对象，材质名在它的 Value 属性上——se_invoke_chain 不支持读属性值以外的操作，所以最后一步要 AI 自己调 se_describe_object($3) 或 se_batch_read。"
+}

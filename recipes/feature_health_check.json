@@ -1,0 +1,37 @@
+{
+  "name": "feature_health_check",
+  "title": "特征体检：枚举拉伸/除料/旋转等特征集合的 Status，定位僵尸（1216476311）",
+  "version": 1,
+  "status": "draft",
+  "risk": "readOnly",
+  "anchoredTo": { "se": "2022", "sourceDoc": "part" },
+  "inputs": [
+    { "name": "target", "type": "object", "required": true, "desc": "起始对象=零件文档句柄（先 se_get_selection）" },
+    { "name": "modelIndex", "type": "int", "default": "1", "desc": "Models.Item(i)" }
+  ],
+  "preconditions": [
+    { "kind": "handleExists", "hint": "target 必须是句柄表里存在的 obj-N（先 se_get_selection）" },
+    { "kind": "docKind", "value": "part", "hint": "仅零件文档" }
+  ],
+  "steps": [
+    { "member": "Models", "on": "{{target}}" },
+    { "member": "Item", "on": "$1", "args": ["{{modelIndex}}"] },
+    { "member": "ExtrudedProtrusions", "on": "$2" },
+    { "member": "Count", "on": "$3", "args": [] },
+    { "member": "Item", "on": "$3", "args": ["1"] },
+    { "member": "Name", "on": "$5", "args": [] },
+    { "member": "Status", "on": "$5", "args": [] },
+    { "member": "ExtrudedCutouts", "on": "$2" },
+    { "member": "Count", "on": "$8", "args": [] },
+    { "member": "Item", "on": "$8", "args": ["1"] },
+    { "member": "Name", "on": "$10", "args": [] },
+    { "member": "Status", "on": "$10", "args": [] },
+    { "member": "RevolvedProtrusions", "on": "$2" },
+    { "member": "Count", "on": "$13", "args": [] },
+    { "member": "RevolvedCutouts", "on": "$2" },
+    { "member": "Count", "on": "$15", "args": [] }
+  ],
+  "verification": { "kind": "snapshotDiff", "name": "before_health_check", "expect": "输出拉伸/除料/旋转特征集合的 Count 与第 1 个特征的 Name/Status：Status=1216476310 正常、1216476311=僵尸（几何未生成）。僵尸特征立即删除（se_invoke_member Delete + confirm=true），勿带到下一步" },
+  "derivedFrom": "knowledge/EXPERIENCE.md 2026-09-14 沙盒僵尸孔复盘 + modeling-recipes.md §一（featureStatus 判活判死）",
+  "notes": "只枚举各集合第 1 项作健康抽查（完整盘点用 se_walk_object 或脚本遍历）。删除僵尸走 Delete+confirm（破坏性护栏）。另注意 Body.Faces(1).Count 不含柱面——纯板也是 6 面，不能拿面数当'孔切出来'的判据，必须看特征 Status。"
+}

@@ -1,5 +1,6 @@
 # solidedge-mcp
 
+[![CI](https://github.com/1337332551-dot/solidedge-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/1337332551-dot/solidedge-mcp-server/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **让 AI 客户端直接操作 Siemens Solid Edge 的 MCP server**——通过自然对话查询模型、构建参数化特征、自动化出图、监听文档事件。
@@ -23,19 +24,19 @@ _一次建模过程：AI 通过 MCP 驱动 Solid Edge 一步步把模型建出�
 - **参数化建模**——用 JSON 描述特征序列，AI 负责填参数（`se_model_build` 先走静态 dry-run 校验，通过才真正动模型）
 - **模型探查**——遍历对象树、读几何、读变量、读选中状态
 - **出图自动化**——视图裁剪、图幅排版、中心线/中心标记、驱动尺寸
-- **装配校核**——干涉检查、重量汇总
+- **装配操作**——读取装配结构（零件表/约束/BOM）、干涉检查与重量汇总，一次声明式调用完成建装配（`se_assembly_query` / `se_assembly_build`）
 - **事件监听**——第二个 MCP server 把 Solid Edge 文档事件流式推给 AI
 
 ## 两个 MCP server
 
 | Server | 可执行文件 | 用途 |
 |---|---|---|
-| 执行 | `solidedge-mcp` | 21 个工具：查询、文档、建模、脚本 |
+| 执行 | `solidedge-mcp` | 23 个工具：查询、文档、建模、装配、脚本 |
 | 事件 | `solidedge-event-mcp` | 4 个工具：订阅/等待/查询 Solid Edge 事件 |
 
 ## 设计意图：配合 skill 使用
 
-工具面是刻意做小的——**21 个，不是 200 个**。工作流知识放在上面一层：**skill**——可版本化、可编辑的知识包（企业制图标准、特征命名规则、典型零件建模 SOP；可以自己写，也可以让 AI 从一次会话里总结生成），负责告诉 AI"做什么、按什么顺序"。本 server 只提供底下那层安全、受控的执行原语：读模型、建特征、探弹窗、落审计。
+工具面是刻意做小的——**23 个，不是 200 个**。工作流知识放在上面一层：**skill**——可版本化、可编辑的知识包（企业制图标准、特征命名规则、典型零件建模 SOP；可以自己写，也可以让 AI 从一次会话里总结生成），负责告诉 AI"做什么、按什么顺序"。本 server 只提供底下那层安全、受控的执行原语：读模型、建特征、探弹窗、落审计。
 
 这样分工，领域知识就不需要烧进工具代码：
 
@@ -49,9 +50,9 @@ _一次建模过程：AI 通过 MCP 驱动 Solid Edge 一步步把模型建出�
 
 | 分类 | 工具 |
 |---|---|
-| 查询/只读 | `se_get_document` `se_get_selection` `se_find_paths` `se_describe_object` `se_walk_object` `se_batch_read` `se_read_geometry` `se_get_variables` `se_view_context` `se_capture_viewport` `se_snapshot_diff` `se_validate_features` |
+| 查询/只读 | `se_get_document` `se_get_selection` `se_find_paths` `se_describe_object` `se_walk_object` `se_batch_read` `se_read_geometry` `se_get_variables` `se_view_context` `se_capture_viewport` `se_snapshot_diff` `se_validate_features` `se_assembly_query` |
 | 文档会话 | `se_open_document` `se_new_document` `se_close_document` |
-| 改动模型 | `se_model_build` `se_extrude_on_face` `se_invoke_member` `se_invoke_chain` `se_recipe_run` |
+| 改动模型 | `se_model_build` `se_extrude_on_face` `se_invoke_member` `se_invoke_chain` `se_recipe_run` `se_assembly_build` |
 | 逃生通道 | `se_script_run`（对 COM API 跑一段 C# 脚本） |
 
 事件 server（`solidedge-event-mcp`）：
@@ -71,14 +72,14 @@ _一次建模过程：AI 通过 MCP 驱动 Solid Edge 一步步把模型建出�
 
 | 值 | 行为 |
 |---|---|
-| `full`（默认） | 21 个工具全放行 |
-| `engineer`（机械工程师） | 工具全放行；但自由调用通道（`se_invoke_member`/`se_invoke_chain`）只放行 `get` 前缀的读取类成员（`GetXxx`/`get_xxx`），建模走 `se_model_build`/`se_extrude_on_face`/`se_recipe_run` |
-| `readonly` | 只放行 12 个查询工具；建模/会话/脚本类调用在传输层直接拒绝，并提示如何切回 |
+| `full`（默认） | 23 个工具全放行 |
+| `engineer`（机械工程师） | 工具全放行；但自由调用通道（`se_invoke_member`/`se_invoke_chain`）只放行 `get` 前缀的读取类成员（`GetXxx`/`get_xxx`），建模走 `se_model_build`/`se_extrude_on_face`/`se_recipe_run`/`se_assembly_build` |
+| `readonly` | 只放行 13 个查询工具；建模/会话/脚本类调用在传输层直接拒绝，并提示如何切回 |
 | 其他任意值 | fail-closed，按 `readonly` 处理 |
 
 旧的 `SE_MCP_READONLY=1` 仍然兼容，等价 `readonly`。改模式后需要重启 AI 会话（客户端重载 MCP server 才生效）。
 
-门禁背后的工具风险档位：**Read**（12 个查询工具）/ **Session**（open/new/close 文档）/ **Model**（5 个改模型工具）/ **Escape**（`se_script_run`）。未登记工具 fail-closed，按最高危处理。
+门禁背后的工具风险档位：**Read**（13 个查询工具）/ **Session**（open/new/close 文档）/ **Model**（6 个改模型工具）/ **Escape**（`se_script_run`）。未登记工具 fail-closed，按最高危处理。
 
 其他环境变量：
 
@@ -104,7 +105,7 @@ git clone https://github.com/1337332551-dot/solidedge-mcp-server.git
 cd solidedge-mcp
 dotnet build src/SolidEdge.Spy.McpServer -c Release
 dotnet build src/SolidEdge.Spy.EventMcp  -c Release
-dotnet test tests/SolidEdge.Spy.McpServer.Tests
+dotnet test solidedge-mcp.sln            # 551 个单元测试，不需要装 Solid Edge
 ```
 
 不需要你提前准备任何 Siemens 文件：COM 互操作程序集来自社区发布的 [`Interop.SolidEdge`](https://www.nuget.org/packages/Interop.SolidEdge) NuGet 包（纯类型定义，本仓库不分发任何 Siemens 专有代码）。
@@ -185,17 +186,21 @@ COM 互操作 (IDispatch + PIA) ── 正在运行的 Solid Edge 实例
 
 ```
 src/
-├── SolidEdge.Spy.McpServer/    # 执行 MCP server（21 工具）
-├── SolidEdge.Spy.EventMcp/     # 事件 MCP server（4 工具）
-├── SolidEdge.Shared/           # COM 互操作基础设施（编译期共享，单一数据源）
-tests/                          # 193 个单元测试（纯逻辑，不需要装 SE）
-scripts/                        # 辅助脚本（互操作程序集生成）
+├── SolidEdge.Spy.McpServer/        # 执行 MCP server（23 工具）
+├── SolidEdge.Spy.EventMcp/         # 事件 MCP server（4 工具）
+├── SolidEdge.Shared/               # COM 互操作基础设施（编译期共享，单一数据源）
+├── SolidEdge.Spy.McpServer.Tests/  # 单元测试第 2 套（纯逻辑，不需要装 SE）
+tests/SolidEdge.Spy.McpServer.Tests/ # 单元测试第 1 套（纯逻辑，不需要装 SE）
+recipes/                            # 示例配方 JSON（见 recipes/README.md）
+scripts/                            # 辅助脚本（互操作程序集生成）
 ```
+
+两套 xUnit 工程合计 551 个单元测试（`dotnet test solidedge-mcp.sln`）。
 
 ## 开发
 
 ```powershell
-dotnet test tests/SolidEdge.Spy.McpServer.Tests
+dotnet test solidedge-mcp.sln
 ```
 
 测试是纯 .NET 的（不依赖 Solid Edge），覆盖解析、校验规则、权限档位表、传输层 tap。
@@ -222,7 +227,7 @@ MCP server 由 AI 客户端在会话启动时拉起，任何 `mcp.json` 改动�
 
 ## 项目状态
 
-`se_model_build` 消费的 features JSON——建模中间表示（IR）——还处在**毛坯阶段**：op 覆盖面、默认值、字段名都可能随版本调整。如果你的工作流要依赖它，建议固定 commit 使用，并预期格式变动。注意本仓库目前**不自带任何配方 JSON**——自己写好后把目录指给 `SE_MCP_RECIPES_DIR`，或放到 exe 旁边即可。来自真实参数化建模用例的反馈尤其有价值——欢迎开 issue 告诉你想建什么、卡在哪。
+`se_model_build` 消费的 features JSON——建模中间表示（IR）——还处在**毛坯阶段**：op 覆盖面、默认值、字段名都可能随版本调整。如果你的工作流要依赖它，建议固定 commit 使用，并预期格式变动。本仓库自带一组**示例配方**（拉伸、旋转、除料、只读探查，以及一条护栏自检配方），放在 [`recipes/`](recipes/)——自己的配方可以放在它们旁边，或用 `SE_MCP_RECIPES_DIR` 指向别的目录。来自真实参数化建模用例的反馈尤其有价值——欢迎开 issue 告诉你想建什么、卡在哪。
 
 ## Roadmap
 

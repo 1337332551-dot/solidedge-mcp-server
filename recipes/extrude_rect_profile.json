@@ -1,0 +1,44 @@
+{
+  "name": "extrude_rect_profile",
+  "title": "拉伸：矩形轮廓新建 Model（4 线 + 4 端点闭合 + End(0) + AddFiniteExtrudedProtrusion）",
+  "version": 1,
+  "status": "draft",
+  "risk": "modelChanging",
+  "anchoredTo": { "se": "2022", "sourceDoc": "part" },
+  "inputs": [
+    { "name": "target", "type": "object", "required": true, "desc": "起始对象=文档句柄。se_get_selection 在空选中时会回退把 ActiveDocument 登记为 obj-1" },
+    { "name": "width", "type": "double", "unit": "m", "required": true, "desc": "矩形宽（局部 u 方向）" },
+    { "name": "height", "type": "double", "unit": "m", "required": true, "desc": "矩形高（局部 v 方向）" },
+    { "name": "depth", "type": "double", "unit": "m", "required": true, "desc": "拉伸深度" },
+    { "name": "refPlaneIndex", "type": "int", "default": "1", "desc": "RefPlanes.Item(i) 的 i；默认 1 = RefPlane_1" },
+    { "name": "planeSide", "type": "int", "default": "2", "desc": "ProfilePlaneSide；实测 2 有效" }
+  ],
+  "preconditions": [
+    { "kind": "handleExists", "hint": "target 必须是句柄表里存在的 obj-N（先 se_get_selection）" },
+    { "kind": "docKind", "value": "part", "hint": "仅零件文档" }
+  ],
+  "steps": [
+    { "member": "ProfileSets", "on": "{{target}}" },
+    { "member": "Add", "on": "$1" },
+    { "member": "Profiles", "on": "$2" },
+    { "member": "RefPlanes", "on": "{{target}}" },
+    { "member": "Item", "on": "$4", "args": ["{{refPlaneIndex}}"] },
+    { "member": "Add", "on": "$3", "args": ["$5"] },
+    { "member": "Lines2d", "on": "$6" },
+    { "member": "AddBy2Points", "on": "$7", "args": ["0", "0", "{{width}}", "0"] },
+    { "member": "AddBy2Points", "on": "$7", "args": ["{{width}}", "0", "{{width}}", "{{height}}"] },
+    { "member": "AddBy2Points", "on": "$7", "args": ["{{width}}", "{{height}}", "0", "{{height}}"] },
+    { "member": "AddBy2Points", "on": "$7", "args": ["0", "{{height}}", "0", "0"] },
+    { "member": "Relations2d", "on": "$6" },
+    { "member": "AddKeypoint", "on": "$12", "args": ["$8", "1", "$9", "0"] },
+    { "member": "AddKeypoint", "on": "$12", "args": ["$9", "1", "$10", "0"] },
+    { "member": "AddKeypoint", "on": "$12", "args": ["$10", "1", "$11", "0"] },
+    { "member": "AddKeypoint", "on": "$12", "args": ["$11", "1", "$8", "0"] },
+    { "member": "End", "on": "$6", "args": ["0"] },
+    { "member": "Models", "on": "{{target}}" },
+    { "member": "AddFiniteExtrudedProtrusion", "on": "$18", "args": ["1", "@arr:$6", "{{planeSide}}", "{{depth}}"] }
+  ],
+  "verification": { "kind": "snapshotDiff", "name": "before_extrude", "expect": "diff 显示 Models 集合新增 1 项（不是 identical=true）" },
+  "derivedFrom": "se-query-recipes/knowledge/modeling-recipes-project.md「拉伸体完整 chain（实测 SideFaces=4 有效）」",
+  "notes": "整链必须一次执行完：草图编辑上下文只在单次 SE 调用内有效，拆开调 End/Add 必失败（该文档「第四大坑」）。steps 里的 $N 编号与原文一一对应，改动时注意同步。"
+}
