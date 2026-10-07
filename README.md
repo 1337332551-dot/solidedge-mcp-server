@@ -31,12 +31,12 @@ Real workflows it supports today:
 
 | Server | Binary | Purpose |
 |---|---|---|
-| Execution | `solidedge-mcp` | 23 tools: query, document, modeling, assembly, scripting |
+| Execution | `solidedge-mcp` | 22 tools: query, document, modeling, assembly, scripting |
 | Events | `solidedge-event-mcp` | 4 tools: subscribe/wait/query Solid Edge events |
 
 ## Designed to pair with skills
 
-The tool surface is deliberately small — **23 tools, not 200**. The workflow knowledge is meant to live one layer up, in **skills**: versioned, editable knowledge packages (company drawing standards, feature naming rules, typical-part modeling SOPs — written by you or distilled by the AI itself from a session) that tell the AI *what to build and in what order*. This server provides the safe, verified primitives underneath: read, build, probe, audit.
+The tool surface is deliberately small — **22 tools, not 200**. The workflow knowledge is meant to live one layer up, in **skills**: versioned, editable knowledge packages (company drawing standards, feature naming rules, typical-part modeling SOPs — written by you or distilled by the AI itself from a session) that tell the AI *what to build and in what order*. This server provides the safe, verified primitives underneath: read, build, probe, audit.
 
 That division keeps domain knowledge out of tool code:
 
@@ -52,7 +52,7 @@ If you prefer a fat-tool server that maps the whole COM API 1:1, other projects 
 |---|---|
 | Query / read | `se_get_document` `se_get_selection` `se_find_paths` `se_describe_object` `se_walk_object` `se_batch_read` `se_read_geometry` `se_get_variables` `se_view_context` `se_capture_viewport` `se_snapshot_diff` `se_validate_features` `se_assembly_query` |
 | Document session | `se_open_document` `se_new_document` `se_close_document` |
-| Model changing | `se_model_build` `se_extrude_on_face` `se_invoke_member` `se_invoke_chain` `se_recipe_run` `se_assembly_build` |
+| Model changing | `se_model_build` `se_invoke_member` `se_invoke_chain` `se_recipe_run` `se_assembly_build` |
 | Escape hatch | `se_script_run` (run a C# script against the COM API) |
 
 Events server (`solidedge-event-mcp`):
@@ -72,8 +72,8 @@ Set the `SE_MCP_MODE` environment variable on the server entry in your MCP confi
 
 | Value | Behavior |
 |---|---|
-| `full` *(default)* | All 23 tools allowed |
-| `engineer` | All 23 tools allowed, but the free-form invoke channel (`se_invoke_member`/`se_invoke_chain`) only accepts read-only members whose name starts with `get` (e.g. `GetVariables`); model via the guarded tools (`se_model_build`/`se_extrude_on_face`/`se_recipe_run`/`se_assembly_build`) |
+| `full` *(default)* | All 22 tools allowed |
+| `engineer` | All 22 tools allowed, but the free-form invoke channel (`se_invoke_member`/`se_invoke_chain`) only accepts read-only members — an explicit allowlist of property-style reads (`Models`/`Item`/`Body`/`Name`/…) plus names starting with `get` (e.g. `GetVariables`); model via the guarded tools (`se_model_build`/`se_recipe_run`/`se_assembly_build`) |
 | `readonly` | Only the 13 query tools; model-changing/session/script calls are rejected at the transport layer with a hint on how to switch back |
 | anything else | Fail-closed: treated as `readonly` |
 
@@ -186,7 +186,7 @@ COM interop (IDispatch + PIA) ── running Solid Edge instance
 
 ```
 src/
-├── SolidEdge.Spy.McpServer/        # execution MCP server (23 tools)
+├── SolidEdge.Spy.McpServer/        # execution MCP server (22 tools)
 ├── SolidEdge.Spy.EventMcp/         # events MCP server (4 tools)
 ├── SolidEdge.Shared/               # COM interop infrastructure shared at compile time
 ├── SolidEdge.Spy.McpServer.Tests/  # xUnit tests, part 2 (pure logic, no SE needed)

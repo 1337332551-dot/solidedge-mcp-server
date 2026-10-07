@@ -80,7 +80,6 @@ host 同时挂载两个 server（`solidedge` 执行 + `solidedge-event` 事件�
 | `se_new_document` | 🟡 | 新建空文档并登记句柄（part/asm/dft/psm/weld） |
 | `se_close_document` | 🔴（潜在） | 关闭**仅本会话追踪表内**的文档；`Dirty` 未保存时须 `confirm=true`，**永不保存** |
 | `se_model_build` | 🟡 | 建模：按描述构建特征（独立保护逻辑，建议统一收口到 `Guardrail`，见下） |
-| `se_extrude_on_face` | 🟡 | 在面上拉伸特征（独立保护） |
 | `se_validate_features` | 🟢 | 校验特征（只读检查） |
 | `se_recipe_run` | 🟡 | 运行配方（预检 + 过 `Guardrail`） |
 | `se_script_run` | 🟡 | 受控 C# 一次性脚本通道（沙箱子进程 + 全局只读开关 + 审计） |
@@ -93,9 +92,9 @@ host 同时挂载两个 server（`solidedge` 执行 + `solidedge-event` 事件�
 
 | 模式 | 工具面 | 自由调用通道（se_invoke_member / se_invoke_chain） |
 |---|---|---|
-| `readonly` | 只放 12 个 Read 档查询工具，其余档传输层直接拒绝 | 不可用（写工具整体被拦） |
-| `engineer`（机械工程师） | 21 个工具全放 | **只放行 `get` 前缀成员**（`GetXxx` / `get_xxx` 读取类）；建模走 se_model_build / se_extrude_on_face / se_recipe_run |
-| `full` | 21 个工具全放 | 任意成员（Guardrail 分级 + confirm 仍在） |
+| `readonly` | 只放 13 个 Read 档查询工具，其余档传输层直接拒绝 | 不可用（写工具整体被拦） |
+| `engineer`（机械工程师） | 22 个工具全放 | **只放行显式读取白名单 + `get` 前缀成员**（`Models`/`Item`/`Body`/`Name` 等属性式读取，及 `GetXxx` / `get_xxx` 读取类）；建模走 se_model_build / se_recipe_run |
+| `full` | 22 个工具全放 | 任意成员（Guardrail 分级 + confirm 仍在） |
 
 旧 `SE_MCP_READONLY=1` 兼容映射 readonly；未识别值 fail-closed 按 readonly。改模式需重启 AI 会话（客户端重载 server 才生效）。
 
@@ -110,7 +109,7 @@ host 同时挂载两个 server（`solidedge` 执行 + `solidedge-event` 事件�
    - `se_open/close/new_document`：文档追踪表 + `Dirty` 检查 + `confirm` + `AuditLog`
    - `se_close_document`：**只关本会话 `se_open_document` 打开的文档，绝不误关你手动打开的**
    - `se_script_run`：名称白名单（防路径穿越）+ 独立子进程沙箱 + 超时强杀进程树 + 全局只读开关禁用 + 每次运行写审计
-   - `se_model_build`/`se_extrude_on_face`：独立保护逻辑（当前未调 `Guardrail`，**建议后续统一收口**）
+   - `se_model_build`：独立保护逻辑（当前未调 `Guardrail`，**建议后续统一收口**）
 
 **审计**：所有写操作（含被拒）写入 `AuditLog`（`%LOCALAPPDATA%\SolidEdgeSpy\mcp-audit.log`），可事后追溯。
 
@@ -229,7 +228,7 @@ src/SolidEdge.Spy.McpServer/
     ├── SnapshotTools.cs             ← se_snapshot_diff
     ├── WalkTools.cs                 ← se_walk_object
     ├── InvokeTools.cs               ← se_invoke_member / se_invoke_chain(通用通道,过 Guardrail)
-    ├── ModelingTools.cs             ← se_model_build / se_extrude_on_face / se_validate_features(建模写)
+    ├── ModelingTools.cs             ← se_model_build / se_validate_features(建模写)
     ├── RecipeTools.cs               ← se_recipe_run(配方,预检+Guardrail)
     └── ScriptTools.cs               ← se_script_run(受控脚本沙箱)
 ```

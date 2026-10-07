@@ -31,12 +31,12 @@ _一次建模过程：AI 通过 MCP 驱动 Solid Edge 一步步把模型建出�
 
 | Server | 可执行文件 | 用途 |
 |---|---|---|
-| 执行 | `solidedge-mcp` | 23 个工具：查询、文档、建模、装配、脚本 |
+| 执行 | `solidedge-mcp` | 22 个工具：查询、文档、建模、装配、脚本 |
 | 事件 | `solidedge-event-mcp` | 4 个工具：订阅/等待/查询 Solid Edge 事件 |
 
 ## 设计意图：配合 skill 使用
 
-工具面是刻意做小的——**23 个，不是 200 个**。工作流知识放在上面一层：**skill**——可版本化、可编辑的知识包（企业制图标准、特征命名规则、典型零件建模 SOP；可以自己写，也可以让 AI 从一次会话里总结生成），负责告诉 AI"做什么、按什么顺序"。本 server 只提供底下那层安全、受控的执行原语：读模型、建特征、探弹窗、落审计。
+工具面是刻意做小的——**22 个，不是 200 个**。工作流知识放在上面一层：**skill**——可版本化、可编辑的知识包（企业制图标准、特征命名规则、典型零件建模 SOP；可以自己写，也可以让 AI 从一次会话里总结生成），负责告诉 AI"做什么、按什么顺序"。本 server 只提供底下那层安全、受控的执行原语：读模型、建特征、探弹窗、落审计。
 
 这样分工，领域知识就不需要烧进工具代码：
 
@@ -52,7 +52,7 @@ _一次建模过程：AI 通过 MCP 驱动 Solid Edge 一步步把模型建出�
 |---|---|
 | 查询/只读 | `se_get_document` `se_get_selection` `se_find_paths` `se_describe_object` `se_walk_object` `se_batch_read` `se_read_geometry` `se_get_variables` `se_view_context` `se_capture_viewport` `se_snapshot_diff` `se_validate_features` `se_assembly_query` |
 | 文档会话 | `se_open_document` `se_new_document` `se_close_document` |
-| 改动模型 | `se_model_build` `se_extrude_on_face` `se_invoke_member` `se_invoke_chain` `se_recipe_run` `se_assembly_build` |
+| 改动模型 | `se_model_build` `se_invoke_member` `se_invoke_chain` `se_recipe_run` `se_assembly_build` |
 | 逃生通道 | `se_script_run`（对 COM API 跑一段 C# 脚本） |
 
 事件 server（`solidedge-event-mcp`）：
@@ -72,8 +72,8 @@ _一次建模过程：AI 通过 MCP 驱动 Solid Edge 一步步把模型建出�
 
 | 值 | 行为 |
 |---|---|
-| `full`（默认） | 23 个工具全放行 |
-| `engineer`（机械工程师） | 工具全放行；但自由调用通道（`se_invoke_member`/`se_invoke_chain`）只放行 `get` 前缀的读取类成员（`GetXxx`/`get_xxx`），建模走 `se_model_build`/`se_extrude_on_face`/`se_recipe_run`/`se_assembly_build` |
+| `full`（默认） | 22 个工具全放行 |
+| `engineer`（机械工程师） | 工具全放行；但自由调用通道（`se_invoke_member`/`se_invoke_chain`）只放行只读成员——一份显式白名单的属性式读取（`Models`/`Item`/`Body`/`Name` 等）加 `get` 前缀成员（`GetXxx`/`get_xxx`），建模走 `se_model_build`/`se_recipe_run`/`se_assembly_build` |
 | `readonly` | 只放行 13 个查询工具；建模/会话/脚本类调用在传输层直接拒绝，并提示如何切回 |
 | 其他任意值 | fail-closed，按 `readonly` 处理 |
 
