@@ -1,4 +1,4 @@
-# solidedge-mcp
+﻿# solidedge-mcp
 
 [![CI](https://github.com/1337332551-dot/solidedge-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/1337332551-dot/solidedge-mcp-server/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -105,7 +105,7 @@ git clone https://github.com/1337332551-dot/solidedge-mcp-server.git
 cd solidedge-mcp
 dotnet build src/SolidEdge.Spy.McpServer -c Release
 dotnet build src/SolidEdge.Spy.EventMcp  -c Release
-dotnet test solidedge-mcp.sln            # 551 unit tests, no Solid Edge required
+dotnet test solidedge-mcp.sln            # 558 unit tests, no Solid Edge required
 ```
 
 No Siemens files are needed from you up front: the COM interop assembly comes from the community-published [`Interop.SolidEdge`](https://www.nuget.org/packages/Interop.SolidEdge) NuGet package (pure type definitions, no Siemens proprietary code is distributed in this repo).
@@ -195,7 +195,7 @@ recipes/                            # example recipe JSON files (see recipes/REA
 scripts/                            # helper scripts (interop generation)
 ```
 
-551 unit tests across the two xUnit projects (`dotnet test solidedge-mcp.sln`).
+558 unit tests across the two xUnit projects (`dotnet test solidedge-mcp.sln`).
 
 ## Development
 

@@ -1,4 +1,4 @@
-# solidedge-mcp
+﻿# solidedge-mcp
 
 [![CI](https://github.com/1337332551-dot/solidedge-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/1337332551-dot/solidedge-mcp-server/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -105,7 +105,7 @@ git clone https://github.com/1337332551-dot/solidedge-mcp-server.git
 cd solidedge-mcp
 dotnet build src/SolidEdge.Spy.McpServer -c Release
 dotnet build src/SolidEdge.Spy.EventMcp  -c Release
-dotnet test solidedge-mcp.sln            # 551 个单元测试，不需要装 Solid Edge
+dotnet test solidedge-mcp.sln            # 558 个单元测试，不需要装 Solid Edge
 ```
 
 不需要你提前准备任何 Siemens 文件：COM 互操作程序集来自社区发布的 [`Interop.SolidEdge`](https://www.nuget.org/packages/Interop.SolidEdge) NuGet 包（纯类型定义，本仓库不分发任何 Siemens 专有代码）。
@@ -195,7 +195,7 @@ recipes/                            # 示例配方 JSON（见 recipes/README.md�
 scripts/                            # 辅助脚本（互操作程序集生成）
 ```
 
-两套 xUnit 工程合计 551 个单元测试（`dotnet test solidedge-mcp.sln`）。
+两套 xUnit 工程合计 558 个单元测试（`dotnet test solidedge-mcp.sln`）。
 
 ## 开发
 
