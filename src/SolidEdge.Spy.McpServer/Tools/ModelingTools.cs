@@ -112,7 +112,7 @@ namespace SolidEdge.Spy.McpServer.Tools
             "slot 腰孔/长圆孔({\"center\":[x,y],\"length\":总长,\"width\":宽,\"angle\":弧度?} 或简写 [x,y,长,宽];" +
             "【真圆弧】构造,两端是半圆不是折线)、" +
             "rect 两角点矩形(如 [[0,0],[0.1,0.1]])、polygon 多边形点列、loops 多环。" +
-            "★ 形状键平铺在特征对象顶层(无 shape 包装——嵌套 shape:{...} 是 se_extrude_on_face 的写法,勿串味)。" +
+            "★ 形状键平铺在特征对象顶层(无 shape 包装——嵌套 shape:{...} 不是本工具的写法,勿串味)。" +
             "plane 支持 RefPlane_1/2/3、@别名(前面 plane op 建的)、obj-K、face:<Face.ID>(如 \"face:26\")或轴向选择器 face:±X/±Y/±Z。" +
             "★ face 锚定(2026-10-03):在已有实体面上加 extrude/cut/hole 时,plane 直接写该面的 Face.ID(或 face:+Z 这类选择器);" +
             "坐标模式由可选字段 coords 决定(2026-10-04):缺省/\"global\"=轮廓按【全局世界坐标】解释——外法向轴 Z→(X,Y)、X→(Y,Z)、Y→(X,Z)," +
@@ -417,139 +417,6 @@ namespace SolidEdge.Spy.McpServer.Tools
             {
                 return Error("se_validate_features 失败: " + DescribeException(ex));
             }
-        }
-
-        /// <summary>
-        /// 按面 ID 定位到一个面,并在该实体面上做拉伸(凸台)。
-        /// 流程:遍历 Model.Body.Shells.Faces 找 Face.ID==faceId 的面 →
-        ///   RefPlanes.AddParallelByDistance(face, 0.0, 1) 建与该面重合的参考平面 →
-        ///   ProfileSets.Add().Profiles.Add(该参考平面) → 画闭合轮廓(rect/polygon) →
-        ///   Model.ExtrudedProtrusions.AddFinite(profile, profileSide, planeSide, depth) 拉伸(★4 参数)。
-        /// 轮廓坐标是"该面局部坐标系"(参考平面 u/v),非全局 XYZ —— 真机实测原点在【面中心】,
-        /// 且 v 轴常与全局反向(底面 rect v∈[0.02,0.06] 落在 y∈[-0.01,0.03])。
-        /// 2026-10-03 真机更正:此前依赖 Sketches.AddByPlanarFace(Face),本机 SE2022 抛 0x80004021(操作不被支持),
-        /// 回退 AddByPlane(Face) 又必然 E_NOINTERFACE(该 API 只收 RefPlane)—— 该工具此前从未成功过。
-        /// 副作用:模型树会多一个隐藏的无名参考平面(Name=null)。
-        /// </summary>
-        [McpServerTool, Description("按面 ID 定位面并在该实体面上做拉伸凸台(内部建一个与面重合的隐藏参考平面,模型树会留一个无名 RefPlane)。" +
-            "输入 faceId(Face.ID,整数)、轮廓 rect(两角点)/polygon(≥3点,单位米,为该面局部坐标系 u/v)、" +
-            "depth(拉伸深度米)、side(方向,默认2)、profileside(默认1)。内部自动:找面→建贴面参考平面→画轮廓→拉伸。" +
-            "返回新特征名称/Status(1216476310=正常,1216476311=几何未生成)/面数。")]
-        public static string se_extrude_on_face(
-            SolidEdgeContext context,
-            [Description("目标面的 Face.ID(整数,如 73)")] int faceId,
-            [Description("草图形状(JSON):{\"rect\":[[u1,v1],[u2,v2]]} 或 {\"polygon\":[[u,v]...]}")] string shape,
-            [Description("拉伸深度(米)")] double depth,
-            [Description("起始对象句柄(零件文档),可省略;省略时用当前活动文档")] string objectId = null,
-            [Description("ProfilePlaneSide 拉伸方向,默认 2(凸台向实体外)")] int side = 2,
-            [Description("ProfileSide,默认 1")] int profileside = 1)
-        {
-            try
-            {
-                return context.Invoke(() =>
-                {
-                    object doc;
-                    if (!string.IsNullOrEmpty(objectId))
-                    {
-                        var h = context.GetHandle(objectId);
-                        if (h == null || h.ComObject == null)
-                            return Error("找不到起始对象编号 " + objectId + "。");
-                        doc = h.ComObject;
-                    }
-                    else
-                    {
-                        var app = context.GetApplication();
-                        doc = app.ActiveDocument;
-                        if (doc == null) return Error("没有活动文档。");
-                    }
-
-                    // 1) 遍历 Faces 找 Face.ID==faceId
-                    object models = Get(doc, "Models");
-                    if (Count(models) == 0) return Error("没有模型实体。");
-                    object model = Get(models, "Item", 1);
-                    object body = Get(model, "Body");
-                    object shells = Get(body, "Shells");
-                    if (Count(shells) == 0) return Error("没有外壳(Shell)。");
-                    object shell = Get(shells, "Item", 1);
-                    object faces = Get(shell, "Faces");
-                    int faceCount = Count(faces);
-                    object targetFace = null;
-                    for (int i = 1; i <= faceCount; i++)
-                    {
-                        object f = Get(faces, "Item", i);
-                        int id = SafeInt(Get(f, "ID"));
-                        if (id == faceId) { targetFace = f; break; }
-                    }
-                    if (targetFace == null)
-                        return Error("未找到 Face.ID=" + faceId + " 的面(当前共 " + faceCount + " 个面)。");
-
-                    // 2) 解析轮廓
-                    JsonElement feat = JsonDocument.Parse(shape).RootElement;
-                    List<double[][]> loops = FeatureSpecParser.ParseLoops(feat);
-
-                    // 3) 在"与该面重合的参考平面"上建闭合轮廓,再拉伸
-                    object profile = CreateProfileOnFace(doc, targetFace, loops);
-                    object extrudes = Get(model, "ExtrudedProtrusions");
-                    object featObj = Call(extrudes, "AddFinite", new object[] { profile, profileside, side, depth });
-
-                    return JsonSerializer.Serialize(new
-                    {
-                        status = "ok",
-                        faceId = faceId,
-                        feature = SafeString(Get(featObj, "Name")),
-                        featureStatus = SafeLong(Get(featObj, "Status")),
-                        faces = FacesCount(featObj),
-                        resolved = new { plane = "Face.ID=" + faceId, side = side, profileside = profileside, depth = depth },
-                        handle = context.AddHandle(featObj, "ExtrudedProtrusion", SafeString(Get(featObj, "Name"))),
-                        hint = "Status=1216476310 正常;1216476311=几何未生成(僵尸),需检查草图是否落在实体/方向。resolved = 本次实际生效的方向/参数。"
-                    });
-                });
-            }
-            catch (Exception ex)
-            {
-                return Error("se_extrude_on_face 失败: " + DescribeException(ex));
-            }
-        }
-
-        /// <summary>
-        /// 建"与实体面重合的参考平面"上的草图轮廓。SE2022 无"直接在面上建草图"通路
-        /// (Sketches.AddByPlanarFace 抛 0x80004021;AddByPlane/Profiles.Add 只收 RefPlane),
-        /// 故走已验证通路:RefPlanes.AddParallelByDistance(face, 0.0, 1) → ProfileSets.Add().Profiles.Add(rp)。
-        /// 副作用:模型树多一个隐藏的无名参考平面(Name=null)。
-        /// </summary>
-        private static object CreateProfileOnFace(object doc, object face, List<double[][]> loops)
-        {
-            object refPlanes = Get(doc, "RefPlanes");
-            object newPlane = Call(refPlanes, "AddParallelByDistance", new object[] { face, 0.0, 1 });
-            SetVisible(newPlane, false);
-
-            object profileSets = Get(doc, "ProfileSets");
-            object profileSet = Call(profileSets, "Add", new object[0]);
-            object profiles = Get(profileSet, "Profiles");
-            object profile = Call(profiles, "Add", new object[] { newPlane });
-
-            object lines = Get(profile, "Lines2d");
-            object relations = Get(profile, "Relations2d");
-
-            foreach (var pts in loops)
-            {
-                int n = pts.Length;
-                var lineObjs = new object[n];
-                for (int i = 0; i < n; i++)
-                {
-                    var p0 = pts[i];
-                    var p1 = pts[(i + 1) % n];
-                    lineObjs[i] = Call(lines, "AddBy2Points", new object[] { p0[0], p0[1], p1[0], p1[1] });
-                }
-                for (int i = 0; i < n; i++)
-                {
-                    Call(relations, "AddKeypoint", new object[] { lineObjs[i], 1, lineObjs[(i + 1) % n], 0 });
-                }
-            }
-
-            Call(profile, "End", new object[] { 0 });
-            SetVisible(profile, false);
-            return profile;
         }
 
         // ---------------- op 实现 ----------------
@@ -1401,7 +1268,7 @@ namespace SolidEdge.Spy.McpServer.Tools
             return result;
         }
 
-        /// <summary>在 Model.Body 的所有 Shell 里按 Face.ID 找面(与 se_extrude_on_face 同判据)。</summary>
+        /// <summary>在 Model.Body 的所有 Shell 里按 Face.ID 找面(面锚定 face:&lt;ID&gt; 的判据)。</summary>
         private static object FindFaceById(object model, int faceId, out int faceCountTotal, List<int> availableIds)
         {
             faceCountTotal = 0;
@@ -3186,7 +3053,7 @@ namespace SolidEdge.Spy.McpServer.Tools
         /// <summary>
         /// 2026-10-03 IR 面锚定:把 "face:&lt;Face.ID&gt;" / "face:±X/±Y/±Z" 解析成一张【与实体面重合的隐藏参考平面】。
         /// SE2022 没有"直接在实体面上建草图"的 API(Sketches.AddByPlanarFace 抛 0x80004021),唯一通路是
-        /// RefPlanes.AddParallelByDistance(face, 0, 1) 建贴面平面再在其上画(与 se_extrude_on_face 同路)。
+        /// RefPlanes.AddParallelByDistance(face, 0, 1) 建贴面平面再在其上画。
         /// 同一张面被多个特征引用时只建一张(facePlanes 缓存,避免模型树堆一串无名 RefPlane)。
         /// localCoords(2026-10-04):coords:"local" 时轮廓按贴面平面局部 u/v 画——只要求【平面面】
         /// (斜面也行);global 模式则要求【轴向面】(全局 2D 坐标在斜面无定义)。

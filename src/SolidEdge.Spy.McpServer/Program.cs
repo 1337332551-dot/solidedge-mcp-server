@@ -18,6 +18,11 @@ namespace SolidEdge.Spy.McpServer
         [STAThread]
         internal static async Task Main(string[] args)
         {
+            // 2026-10-05 整改:本进程是 dotnet 宿主运行 solidedge-mcp.dll,app.manifest 不生效,
+            // 必须在运行时声明 DPI 感知。否则 150% 缩放下窗口矩形/截图被虚拟化
+            // (真机实测:物理 2560x1600 的窗口,截图只得到 1707x1019)。
+            EnableDpiAwareness();
+
             // 必须是 STA 线程(Solid Edge COM 是单线程单元模型)。
             // 整个 server 在这个 STA 线程上跑,所有 COM 调用都在同一线程。
 
@@ -68,6 +73,15 @@ namespace SolidEdge.Spy.McpServer
             SolidEdge.Spy.McpServer.Tools.Guardrail.ReadOnlyEnabled = SolidEdge.Spy.McpServer.Tools.ToolRisk.Mode == SolidEdge.Spy.McpServer.Tools.McpMode.ReadOnly;
             Console.Error.WriteLine("Permission mode: " + modeNote);
 
+            // SE 连接上下文:提前构造(构造即启动 STA 队列线程),同时供还原点 hook 使用。
+            // RestorePointHook(2026-10-06):写类工具(Model/Escape 档)执行前自动对目标文档目录打 git
+            // 还原点,机制性保证"改前一定有点可回";best-effort,失败不阻断。开关 SE_RP_MODE=off。
+            var seContext = new SolidEdgeContext();
+            Console.Error.WriteLine("Restore-point hook: "
+                + (SolidEdge.Spy.McpServer.Tools.RestorePointHook.Enabled
+                    ? "on (keep=" + SolidEdge.Spy.McpServer.Tools.RestorePointHook.Keep + ", root: " + SolidEdge.Spy.McpServer.Tools.RestorePointHook.RepoRoot + ")"
+                    : "off (SE_RP_MODE=off)"));
+
             var builder = Host.CreateApplicationBuilder(args);
 
             // 配置日志(写到 stderr,不干扰 stdio 上的 MCP 协议)
@@ -85,7 +99,8 @@ namespace SolidEdge.Spy.McpServer
                 .WithStreamServerTransport(
                     new SolidEdge.Spy.McpServer.PermissionTap(
                         new SolidEdge.Spy.McpServer.Telemetry.JsonRpcTap(Console.OpenStandardInput(), isRequestSide: true, source: "mcp"),
-                        stdoutTap),
+                        stdoutTap,
+                        new SolidEdge.Spy.McpServer.Tools.RestorePointHook(seContext)),
                     stdoutTap);
 
             // 只读模式:非 Read 档工具在注册期即被滤除,不进 tools/list——工具描述(含
@@ -117,8 +132,8 @@ namespace SolidEdge.Spy.McpServer
                 mcpBuilder.WithToolsFromAssembly();
             }
 
-            // 注册我们的 SE 连接服务(单例,所有工具共享一个连接)
-            builder.Services.AddSingleton<SolidEdgeContext>();
+            // 注册我们的 SE 连接服务(单例,所有工具共享一个连接;实例已提前创建,与还原点 hook 共用)
+            builder.Services.AddSingleton<SolidEdgeContext>(seContext);
 
             var host = builder.Build();
 
@@ -141,6 +156,44 @@ namespace SolidEdge.Spy.McpServer
             logger.LogInformation("MCP Server 已就绪,等待 AI 客户端调用工具。");
             await host.RunAsync();
         }
+
+        /// <summary>
+        /// 声明进程 DPI 感知。必须在任何窗口/DC 创建前调用(本进程由 dotnet 宿主启动,
+        /// app.manifest 不生效,只能在运行时调)。优先 Per-Monitor V2(Win10 1703+,
+        /// 多屏不同 DPI 也正确),失败退回系统级 SetProcessDPIAware。两者都失败无害
+        /// (可能已由宿主设置)。
+        /// </summary>
+        private static void EnableDpiAwareness()
+        {
+            try
+            {
+                // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+                if (SetProcessDpiAwarenessContext(new IntPtr(-4)))
+                {
+                    return;
+                }
+            }
+            catch (EntryPointNotFoundException)
+            {
+                // 老系统无此导出,走下面的系统级回退
+            }
+            catch
+            {
+            }
+            try
+            {
+                SetProcessDPIAware();
+            }
+            catch
+            {
+            }
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetProcessDPIAware();
 
         /// <summary>
         /// 反射扫描程序集里全部 [McpServerToolType]/[McpServerTool] 方法(与

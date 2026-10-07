@@ -79,16 +79,34 @@ public static class GeometryTools
 		public int Bottom;
 	}
 
-	private static readonly Dictionary<string, int> OrientationMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+	/// <summary>
+	/// 2026-10-05 整改:View 对象没有 Orientation 属性(IDispatch 与 PIA 均无,报 DISP_E_UNKNOWNNAME 0x80020006),
+	/// 旧代码 TryInvokeSet(view,"Orientation",…) 必然失败、视角从未真正切换。改用文档命名视图(真机实测存在
+	/// top/front/right/iso/dimetric/trimetric)+ RotateCamera 180° 派生反向视图。参见 SE2022 SDK
+	/// SolidEdgeFramework~View~ApplyNamedView.html / ~View~RotateCamera.html / ~NamedViews~Names.html。
+	/// </summary>
+	private sealed class ViewSpec
 	{
-		["current"] = 0,
-		["iso"] = 7,
-		["top"] = 1,
-		["right"] = 2,
-		["left"] = 3,
-		["front"] = 4,
-		["bottom"] = 5,
-		["back"] = 6
+		/// <summary>文档命名视图名(null = 不切换视角,仅 current)。</summary>
+		public string NamedView;
+
+		/// <summary>非空则在 ApplyNamedView 后再绕该世界轴旋 180°(用于派生 back/left/bottom)。</summary>
+		public double[] RotateAxis;
+
+		/// <summary>展示/文件用标签。</summary>
+		public string Label;
+	}
+
+	private static readonly Dictionary<string, ViewSpec> StandardViewMap = new Dictionary<string, ViewSpec>(StringComparer.OrdinalIgnoreCase)
+	{
+		["current"] = new ViewSpec { Label = "cur" },
+		["iso"] = new ViewSpec { NamedView = "iso", Label = "iso" },
+		["top"] = new ViewSpec { NamedView = "top", Label = "top" },
+		["right"] = new ViewSpec { NamedView = "right", Label = "right" },
+		["front"] = new ViewSpec { NamedView = "front", Label = "front" },
+		["back"] = new ViewSpec { NamedView = "front", RotateAxis = new double[3] { 0.0, 0.0, 1.0 }, Label = "back" },
+		["left"] = new ViewSpec { NamedView = "right", RotateAxis = new double[3] { 0.0, 0.0, 1.0 }, Label = "left" },
+		["bottom"] = new ViewSpec { NamedView = "top", RotateAxis = new double[3] { 0.0, 1.0, 0.0 }, Label = "bottom" }
 	};
 
 	private const string CameraBackupViewName = "__se_mcp_bak";
@@ -394,7 +412,7 @@ public static class GeometryTools
 	{
 		if (!string.IsNullOrWhiteSpace(s))
 		{
-			return OrientationMap.ContainsKey(s.Trim());
+			return StandardViewMap.ContainsKey(s.Trim());
 		}
 		return false;
 	}
@@ -489,22 +507,46 @@ public static class GeometryTools
 		})) };
 	}
 
-	private static int ParseOrientation(string orientation)
+	/// <summary>把 orientation 参数解析为标准视角键(StandardViewMap 的键);空/缺省按 "current";非法抛异常。</summary>
+	private static string ParseOrientationName(string orientation)
 	{
 		if (string.IsNullOrWhiteSpace(orientation))
 		{
-			return 0;
+			return "current";
 		}
 		string text = orientation.Trim();
-		if (OrientationMap.TryGetValue(text, out var value))
+		if (!StandardViewMap.ContainsKey(text))
 		{
-			return value;
+			throw new ArgumentException("未知视角 \"" + orientation + "\"。可用: current/iso/top/front/back/left/right/bottom");
 		}
-		if (int.TryParse(text, out var result) && result >= 0 && result <= 30)
+		return text;
+	}
+
+	/// <summary>
+	/// 应用标准视角:命名视图(SE 文档自带 top/front/right/iso)+ 需要时绕世界轴旋 180° 派生反向视图。
+	/// 成功 true;失败 false 并回填 applyError(供 note 如实说明,不再谎报已切换)。
+	/// </summary>
+	private static bool ApplyStandardView(object view, string orientKey, out string applyError)
+	{
+		applyError = null;
+		if (!StandardViewMap.TryGetValue(orientKey, out var spec) || spec.NamedView == null)
 		{
-			return result;
+			return true;
 		}
-		throw new ArgumentException("未知视角 \"" + orientation + "\"。可用: current/iso/top/front/back/left/right/bottom");
+		if (!ManualInvoke.TryInvoke(view, "ApplyNamedView", new object[1] { spec.NamedView }, out var _, out var error))
+		{
+			applyError = "ApplyNamedView(\"" + spec.NamedView + "\") 失败: " + (error?.Message ?? "未知错误");
+			return false;
+		}
+		if (spec.RotateAxis != null && !ManualInvoke.TryInvoke(view, "RotateCamera", new object[7]
+		{
+			180.0, 0.0, 0.0, 0.0, spec.RotateAxis[0], spec.RotateAxis[1], spec.RotateAxis[2]
+		}, out var _, out var error2))
+		{
+			applyError = "RotateCamera 失败(派生 " + spec.Label + "): " + (error2?.Message ?? "未知错误");
+			return false;
+		}
+		return true;
 	}
 
 	// keepFile: 调用方是否还需要这个图片文件(内嵌给 AI / 按 region 裁剪)。
@@ -520,15 +562,17 @@ public static class GeometryTools
 		{
 			return FailMeta("width/height 必须为正数。");
 		}
-		int orientValue;
+		string orientName;
 		try
 		{
-			orientValue = ParseOrientation(orientation);
+			orientName = ParseOrientationName(orientation);
 		}
 		catch (ArgumentException ex)
 		{
 			return FailMeta(ex.Message);
 		}
+		ViewSpec orientSpec = StandardViewMap[orientName];
+		bool orientChanges = orientSpec.NamedView != null;
 		object application = context.GetApplication();
 		if (!ManualInvoke.TryInvoke(application, "ActiveWindow", null, out var result, out var error))
 		{
@@ -543,7 +587,7 @@ public static class GeometryTools
 			return FailMeta("取 View 失败: " + error2?.Message);
 		}
 		CaptureStore.StartupSweep();
-		bool flag = ((orientValue != 0) | fit) || (zoom.HasValue && Math.Abs(zoom.Value - 1.0) > 1E-09);
+		bool flag = (orientChanges | fit) || (zoom.HasValue && Math.Abs(zoom.Value - 1.0) > 1E-09);
 		bool flag2 = false;
 		bool flag3 = false;
 		object result3;
@@ -598,9 +642,10 @@ public static class GeometryTools
 			}
 		}
 		bool flag4 = true;
-		if (orientValue != 0)
+		string orientApplyError = null;
+		if (orientChanges)
 		{
-			flag4 = ManualInvoke.TryInvokeSet(result2, "Orientation", orientValue, out error3);
+			flag4 = ApplyStandardView(result2, orientName, out orientApplyError);
 		}
 		if (fit)
 		{
@@ -611,17 +656,13 @@ public static class GeometryTools
 			ManualInvoke.TryInvoke(result2, "ZoomCamera", new object[1] { zoom.Value }, out result3, out error3);
 		}
 		Thread.Sleep(600);
-		string text = ((orientValue == 0) ? "cur" : (OrientationMap.FirstOrDefault((KeyValuePair<string, int> kv) => kv.Value == orientValue).Key ?? orientValue.ToString()));
-		if (int.TryParse(text, out var _))
-		{
-			text = "o" + text;
-		}
+		string text = orientSpec.Label;
 		string text2 = explicitPath;
 		if (string.IsNullOrWhiteSpace(text2))
 		{
 			text2 = CaptureStore.NewFilePath(GetDocNameForFile(application), text);
 		}
-		bool flag5 = TryCaptureWindow(text2, out var width2, out var height2, out var error4);
+		bool flag5 = TryCaptureWindow(text2, TryGetFrameWindowHandle(result), out var width2, out var height2, out var error4);
 		bool? flag6 = null;
 		string restoreMethod = null;
 		string backupNote = null;
@@ -692,7 +733,7 @@ public static class GeometryTools
 		List<string> list = new List<string>();
 		if (!flag4)
 		{
-			list.Add("视角切换失败(IDispatch put 不通),截的是切换前视图");
+			list.Add("视角切换失败(" + (orientApplyError ?? "未知错误") + "),截的是切换前视图");
 		}
 		if (backupNote != null)
 		{
@@ -729,7 +770,7 @@ public static class GeometryTools
 			Width = width2,
 			Height = height2,
 			OrientationLabel = orientation,
-			OrientationApplied = ((orientValue == 0) ? null : ((bool?)flag4)),
+			OrientationApplied = (orientChanges ? (bool?)flag4 : null),
 			CameraRestored = flag6,
 			RestoreMethod = restoreMethod,
 			Note = ((list.Count > 0) ? string.Join("; ", list) : null)
@@ -964,26 +1005,35 @@ public static class GeometryTools
 		return true;
 	}
 
-	private static bool TryCaptureWindow(string path, out int width, out int height, out string error)
+	private static bool TryCaptureWindow(string path, nint frameHwnd, out int width, out int height, out string error)
 	{
 		width = 0;
 		height = 0;
 		error = null;
-		Process process = Process.GetProcesses().FirstOrDefault((Process p) => p.MainWindowHandle != IntPtr.Zero && (p.MainWindowTitle ?? "").IndexOf("Solid Edge", StringComparison.OrdinalIgnoreCase) >= 0);
-		if (process == null)
+		// 2026-10-05 整改:旧实现用 Process.MainWindowTitle 找 SE 窗口,窗口最小化/隐藏时
+		// Process.MainWindowHandle 会退化为 0,直接报"找不到 Solid Edge 主窗口"(真机复现)。
+		// 改为优先用 SE COM 的 ActiveWindow.hWnd → GetAncestor(GA_ROOT) 拿主框架窗口句柄
+		// (真机实测:WinLayer 子窗 → EngineFrame 主框架,标题 "Solid Edge 2022 - ..."),
+		// 句柄不随可见性变化;COM 路线不可用时退回按窗口类名 "EngineFrame" 直接查找。
+		nint hwnd = frameHwnd;
+		if (hwnd == IntPtr.Zero)
+		{
+			hwnd = FindWindow("EngineFrame", null);
+		}
+		if (hwnd == IntPtr.Zero)
 		{
 			error = "找不到 Solid Edge 主窗口（进程/窗口标题）";
 			return false;
 		}
 		try
 		{
-			if (IsIconic(process.MainWindowHandle))
+			if (IsIconic(hwnd))
 			{
-				ShowWindow(process.MainWindowHandle, 9);
+				ShowWindow(hwnd, 9);
 			}
-			SetForegroundWindow(process.MainWindowHandle);
+			SetForegroundWindow(hwnd);
 			Thread.Sleep(1200);
-			if (!GetWindowRect(process.MainWindowHandle, out var rect))
+			if (!GetWindowRect(hwnd, out var rect))
 			{
 				error = "GetWindowRect 失败";
 				return false;
@@ -994,7 +1044,7 @@ public static class GeometryTools
 			//   · 跨屏时溢出到相邻屏幕 → 把邻屏内容截进图里（比黑边更糟）
 			MONITORINFO monitorINFO = default(MONITORINFO);
 			monitorINFO.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
-			nint num3 = MonitorFromWindow(process.MainWindowHandle, 2u);
+			nint num3 = MonitorFromWindow(hwnd, 2u);
 			if (num3 != IntPtr.Zero && GetMonitorInfo(num3, ref monitorINFO))
 			{
 				rect.Left = Math.Max(rect.Left, monitorINFO.rcWork.Left);
@@ -1024,11 +1074,44 @@ public static class GeometryTools
 			error = ex.Message;
 			return false;
 		}
-		finally
+	}
+
+	/// <summary>
+	/// 从 SE 的 Window(通常是 Application.ActiveWindow)读 hWnd,再上溯到顶层主框架窗口。
+	/// 真机实测:ActiveWindow.hWnd 是 MDI 客户区子窗(WinLayer),其 GA_ROOT 才是主框架
+	/// (EngineFrame)。句柄与窗口可见性无关,最小化时同样有效。失败返回 IntPtr.Zero。
+	/// </summary>
+	private static nint TryGetFrameWindowHandle(object window)
+	{
+		if (window == null)
 		{
-			process.Dispose();
+			return IntPtr.Zero;
+		}
+		try
+		{
+			if (!ManualInvoke.TryInvoke(window, "hWnd", null, out var hWndObj, out var _) || hWndObj == null)
+			{
+				return IntPtr.Zero;
+			}
+			nint num = new IntPtr(Convert.ToInt64(hWndObj));
+			if (num == IntPtr.Zero)
+			{
+				return IntPtr.Zero;
+			}
+			nint num2 = GetAncestor(num, 2u);
+			return (num2 != IntPtr.Zero) ? num2 : num;
+		}
+		catch
+		{
+			return IntPtr.Zero;
 		}
 	}
+
+	[DllImport("user32.dll")]
+	private static extern nint GetAncestor(nint hWnd, uint gaFlags);
+
+	[DllImport("user32.dll", CharSet = CharSet.Unicode)]
+	private static extern nint FindWindow(string lpClassName, string lpWindowName);
 
 	[DllImport("user32.dll")]
 	private static extern bool SetForegroundWindow(nint hWnd);

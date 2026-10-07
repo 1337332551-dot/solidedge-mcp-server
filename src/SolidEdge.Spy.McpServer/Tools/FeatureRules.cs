@@ -111,10 +111,10 @@ namespace SolidEdge.Spy.McpServer.Tools
             if (s.ShapeError == null) yield break;
 
             // 2026-09-30 v2.1:去掉与 ShapeError 重复的六形状罗列,改为给可复制的正确写法
-            //(形状键平铺在特征对象顶层;嵌套 shape 是 se_extrude_on_face 的入参写法,勿串味)。
+            //(形状键平铺在特征对象顶层;嵌套 shape 不是本工具的入参写法,勿串味)。
             // field 名保持 "shape" 不改——E409/E412 等 5 处一致使用,单改此处会制造跨规则不一致。
             yield return ctx.Error("E102", "shape", s.ShapeError +
-                " 形状键平铺在特征对象顶层(无 shape 包装),如 \"rect\":[[0,0],[0.1,0.1]];嵌套 shape:{...} 是 se_extrude_on_face 的入参写法。",
+                " 形状键平铺在特征对象顶层(无 shape 包装),如 \"rect\":[[0,0],[0.1,0.1]]。",
                 new { action = "provide", field = "shape", oneOf = new[] { "circle", "circles", "slot", "rect", "polygon", "loops" } });
         }
     }
@@ -495,7 +495,7 @@ namespace SolidEdge.Spy.McpServer.Tools
             {
                 // 2026-09-30 v2.1:高频误用键 shape 给 did-you-mean(踩坑那一刻教学,平时零常驻成本)。
                 string hint = string.Equals(f, "shape", StringComparison.OrdinalIgnoreCase)
-                    ? "本工具形状键平铺在特征对象顶层(无 shape 包装),如 \"rect\":[[0,0],[0.1,0.1]];嵌套 shape:{...} 是 se_extrude_on_face 的入参写法。"
+                    ? "本工具形状键平铺在特征对象顶层(无 shape 包装),如 \"rect\":[[0,0],[0.1,0.1]]。"
                     : "";
                 yield return ctx.Warn("W102", f,
                     "未知字段 \"" + f + "\",将被忽略(可能是拼写错误)。" + hint,

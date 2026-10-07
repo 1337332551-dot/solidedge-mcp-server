@@ -45,10 +45,11 @@ namespace SolidEdge.Spy.McpServer.Tests
         }
 
         [Fact]
-        public void 登记表恰好23个工具()
+        public void 登记表恰好22个工具()
         {
             // 21(合流前) + se_assembly_build + se_assembly_query(远端装配域,2026-09-22)
-            Assert.Equal(23, ToolRisk.RegisteredTools.Count());
+            // - se_extrude_on_face(2026-10-05 用户拍板删除,能力由 se_model_build 的 face 锚定覆盖)
+            Assert.Equal(22, ToolRisk.RegisteredTools.Count());
         }
 
         [Theory]
@@ -68,7 +69,6 @@ namespace SolidEdge.Spy.McpServer.Tests
         [InlineData("se_new_document", "Session")]
         [InlineData("se_close_document", "Session")]
         [InlineData("se_model_build", "Model")]
-        [InlineData("se_extrude_on_face", "Model")]
         [InlineData("se_invoke_member", "Model")]
         [InlineData("se_invoke_chain", "Model")]
         [InlineData("se_recipe_run", "Model")]
@@ -177,14 +177,22 @@ namespace SolidEdge.Spy.McpServer.Tests
         }
 
         [Fact]
-        public void Engineer模式_成员过滤_自由通道只放Get前缀()
+        public void Engineer模式_成员过滤_显式读取白名单放行()
         {
             ToolRisk.Configure("engineer", null);
+            // 属性式读取:旧规则只认 get 前缀,把它们全误拦(engineer 下配方不可用,2026-10-05 整改)
+            Assert.Null(ToolRisk.CheckMember("se_invoke_member", "Models"));
+            Assert.Null(ToolRisk.CheckMember("se_invoke_member", "Count"));
+            Assert.Null(ToolRisk.CheckMember("se_invoke_member", "Item"));
+            Assert.Null(ToolRisk.CheckMember("se_invoke_member", "Body"));
+            Assert.Null(ToolRisk.CheckMember("se_invoke_member", "Name"));
+            Assert.Null(ToolRisk.CheckMember("se_invoke_member", "Status"));
+            // 方法式读取:get 前缀兜底
             Assert.Null(ToolRisk.CheckMember("se_invoke_member", "get_variables"));   // 小写 get_ 前缀
             Assert.Null(ToolRisk.CheckMember("se_invoke_member", "GetVariables"));    // 大写 Get 前缀
             Assert.Null(ToolRisk.CheckMember("se_invoke_member", "GetRelated"));      // 无下划线的 SE 读取 API
+            // 写操作仍一律拒绝
             Assert.NotNull(ToolRisk.CheckMember("se_invoke_member", "AddFiniteExtrudedProtrusion"));
-            Assert.NotNull(ToolRisk.CheckMember("se_invoke_member", "Item"));
             Assert.NotNull(ToolRisk.CheckMember("se_invoke_member", "TargetGetInfo"));  // 中缀含 get 不放行,只认前缀
             Assert.NotNull(ToolRisk.CheckMember("se_invoke_chain", "SetValue"));
             var err = ToolRisk.CheckMember("se_invoke_member", "Delete");

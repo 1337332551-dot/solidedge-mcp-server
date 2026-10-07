@@ -97,6 +97,21 @@ internal static class CliRunner
 		{
 			try
 			{
+				// 写命令执行前自动打还原点(2026-10-06;与 MCP 侧 PermissionTap→RestorePointHook 同源)。
+				// BeforeWrite 内部按档位过滤(Session/Read 档直接跳过),best-effort 失败不阻断。
+				string writeTool = ToolNameOfWriteCommand(text);
+				if (writeTool != null)
+				{
+					try
+					{
+						new SolidEdge.Spy.McpServer.Tools.RestorePointHook(context).BeforeWrite(writeTool, default);
+					}
+					catch (Exception rpEx)
+					{
+						Console.Error.WriteLine("还原点失败(不阻断): " + rpEx.Message);
+					}
+				}
+
 				switch (text)
 				{
 				case "--doc":
@@ -526,37 +541,39 @@ internal static class CliRunner
 		{
 			return null;
 		}
-		string tool;
-		switch (command)
+		string tool = ToolNameOfWriteCommand(command);
+		if (tool == null)
 		{
-		case "--newpart":
-			tool = "se_new_document";
-			break;
-		case "--newclose":
-			tool = "se_close_document";
-			break;
-		case "--model":
-			tool = "se_model_build";
-			break;
-		case "--set":
-			tool = "se_invoke_member";
-			break;
-		case "--openclose":
-			tool = "se_open_document";
-			break;
-		case "--cs":
-			tool = "se_script_run";
-			break;
-		case "--recipe-run":
-			tool = "se_recipe_run";
-			break;
-		default:
 			return null; // 其余 CLI 命令均为只读查询或本地文件操作
 		}
 		// ⚠️ Check() 放行时返回 null;直接拼字符串会把 null 变成 "[CLI] " 这个【非 null】结果,
 		//    被上层当成"有拒绝理由",于是 engineer 模式下所有写命令都被空消息误拒(2026-10-01 实测)。
 		string reason = ToolRisk.Check(tool);
 		return (reason == null) ? null : "[CLI] " + reason;
+	}
+
+	/// <summary>CLI 写命令 → 对应 MCP 工具名(还原点 hook 与档位门禁共用);非写命令返回 null。</summary>
+	private static string ToolNameOfWriteCommand(string command)
+	{
+		switch (command)
+		{
+		case "--newpart":
+			return "se_new_document";
+		case "--newclose":
+			return "se_close_document";
+		case "--model":
+			return "se_model_build";
+		case "--set":
+			return "se_invoke_member";
+		case "--openclose":
+			return "se_open_document";
+		case "--cs":
+			return "se_script_run";
+		case "--recipe-run":
+			return "se_recipe_run";
+		default:
+			return null;
+		}
 	}
 
 	private static string Probe(SolidEdgeContext context)

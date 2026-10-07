@@ -42,9 +42,9 @@ internal static class ToolRisk
 {
 	// ⚠️ 新增 [McpServerTool] 工具时必须同步登记,否则只读模式下被 fail-closed 拒绝。
 	//    有单测"全部McpServerTool方法都已登记"反射对账兜底。
-	private static readonly Dictionary<string, RiskTier> Table = new Dictionary<string, RiskTier>(24, StringComparer.Ordinal)
+	private static readonly Dictionary<string, RiskTier> Table = new Dictionary<string, RiskTier>(23, StringComparer.Ordinal)
 	{
-		// ---- Read 档(12):只读查询/静态校验/瞬态视图,不产生模型副作用 ----
+		// ---- Read 档(13):只读查询/静态校验/瞬态视图,不产生模型副作用 ----
 		["se_get_document"] = RiskTier.Read,
 		["se_get_selection"] = RiskTier.Read,
 		["se_find_paths"] = RiskTier.Read,
@@ -64,9 +64,8 @@ internal static class ToolRisk
 		["se_new_document"] = RiskTier.Session,
 		["se_close_document"] = RiskTier.Session,
 
-		// ---- Model 档(6):写模型/装配 ----
+		// ---- Model 档(5):写模型/装配 ----
 		["se_model_build"] = RiskTier.Model,
-		["se_extrude_on_face"] = RiskTier.Model,
 		["se_invoke_member"] = RiskTier.Model,
 		["se_invoke_chain"] = RiskTier.Model,
 		["se_recipe_run"] = RiskTier.Model,
@@ -118,9 +117,13 @@ internal static class ToolRisk
 
 	/// <summary>
 	/// engineer 模式的成员级白名单:仅对自由调用通道(se_invoke_member/se_invoke_chain)生效。
-	/// 分级依据是【风险】而不是名字前缀(2026-09-29 整改):
-	///   - 读取类:名字以 "get" 开头(忽略大小写,覆盖 GetXxx / get_xxx 两类 SE 读取 API);
-	///   - 安全写:SaveAs / Save —— 落盘不改模型树、不产生几何副作用,
+	/// 2026-10-05 整改:旧规则只认 "get" 前缀,而 SE IDispatch 的读取绝大多数是【属性式】
+	/// (Models / Count / Item / Body / Name / Status …),名字里根本没有 get → 被一刀拦死,
+	/// engineer 模式下全部既有配方不可用(真机:--recipe-run read_part_overview 报
+	/// "DENY se_invoke_chain member=Models")。改为【显式读取成员白名单】:
+	///   - 读取类 = EngineerReadMembers 显式集合(属性式读取,按实测用到 + SE 文档补全)
+	///     ∪ 名字以 "get" 开头(GetXxx / get_xxx 方法式读取,兜底);
+	///   - 安全写 = SaveAs / Save —— 落盘不改模型树、不产生几何副作用,
 	///     旧规则按前缀一刀切把它们拦死,逼着 AI 写 se_script_run 脚本绕路(合页建模实测踩坑);
 	///     ⚠️ 已知张力(2026-10-01 评审):①"无几何副作用"不等于"无副作用"——SaveAs 可写任意路径、
 	///     覆盖已有文件;②Save 与 se_close_document「永不代存、保存与否由用户决定」的策略取向相左
@@ -130,6 +133,26 @@ internal static class ToolRisk
 	/// 其余模式/其余工具一律放行(返回 null)。
 	/// 配方(se_recipe_run)内部步骤不在此过滤——配方是预审过的打包件,走工具级门禁。
 	/// </summary>
+	private static readonly HashSet<string> EngineerReadMembers =
+		new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+	{
+		// 遍历/标识
+		"Application", "Documents", "ActiveDocument", "Parent",
+		"Count", "Item", "Name", "DisplayName", "Key", "ID", "Type", "Status",
+		// 文档/模型结构
+		"Models", "Model", "Body", "Bodies", "Shells", "Faces", "Edges", "Vertices", "Loops",
+		"RefPlanes", "ProfileSets", "Profiles", "Sketches",
+		// 特征集合
+		"ExtrudedProtrusions", "ExtrudedCutouts", "RevolvedProtrusions", "RevolvedCutouts",
+		"Holes", "Fillets", "Chamfers", "Ribs", "Patterns", "Lofts", "SweptProtrusions",
+		// 草图/几何量
+		"Lines2d", "Circles2d", "Arcs2d", "Relations2d", "Dimensions", "Profile",
+		"Value", "Length", "Area", "Volume", "Range", "Point",
+		"Properties", "StatusOfDimension", "Constraint",
+		// 文档属性
+		"FullName", "Dirty", "Variables", "Material"
+	};
+
 	private static readonly HashSet<string> EngineerSafeWriteMembers =
 		new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "SaveAs", "Save" };
 
@@ -145,13 +168,14 @@ internal static class ToolRisk
 		}
 		string m = member.Trim();
 		if (m.StartsWith("get", StringComparison.OrdinalIgnoreCase)
+			|| EngineerReadMembers.Contains(m)
 			|| EngineerSafeWriteMembers.Contains(m))
 		{
 			return null;
 		}
-		return "已拒绝:机械工程师模式下," + tool + " 只允许调用读取类成员(名字以 \"get\" 开头)或安全落盘成员("
-			+ string.Join("/", EngineerSafeWriteMembers) + "),'" + member.Trim() + "' 不符合。"
-			+ "建模请走 se_model_build / se_extrude_on_face / se_recipe_run,探索请走 se_walk_object / se_describe_object;"
+		return "已拒绝:机械工程师模式下," + tool + " 只允许调用读取类成员(显式白名单如 Models/Count/Item/Body/Name/Status,或名字以 \"get\" 开头的读取方法)或安全落盘成员("
+			+ string.Join("/", EngineerSafeWriteMembers) + "),'" + m + "' 不符合。"
+			+ "建模请走 se_model_build / se_recipe_run,探索请走 se_walk_object / se_describe_object;"
 			+ "如需任意成员调用,请把 MCP 配置里 SE_MCP_MODE 改为 full 后重启会话重载。";
 	}
 

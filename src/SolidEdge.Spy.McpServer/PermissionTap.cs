@@ -39,6 +39,7 @@ internal sealed class PermissionTap : Stream
 {
 	private readonly Stream _inner;         // stdin(或包在其内的请求侧 tap)
 	private readonly Stream _respondSink;   // 响应侧出口(写拒绝结果用)
+	private readonly RestorePointHook _restorePointHook; // 自动还原点 hook(可空:单测/未接线场景)
 	private readonly List<byte> _line = new List<byte>(8192);
 	private readonly Queue<byte[]> _outgoing = new Queue<byte[]>(); // 已放行的完整行,等 SDK 来读
 	private int _headOffset;                // _outgoing 队头行的已消费偏移
@@ -46,10 +47,11 @@ internal sealed class PermissionTap : Stream
 	private bool _oversize;                 // 超长垃圾行标记:直接按字节透传到下一个 '\n'
 	private const int MaxLineBytes = 2000000;
 
-	internal PermissionTap(Stream inner, Stream respondSink)
+	internal PermissionTap(Stream inner, Stream respondSink, RestorePointHook restorePointHook = null)
 	{
 		_inner = inner ?? throw new ArgumentNullException("inner");
 		_respondSink = respondSink ?? throw new ArgumentNullException("respondSink");
+		_restorePointHook = restorePointHook;
 	}
 
 	// ---------------- 读方向:缓冲 + 逐行过滤 ----------------
@@ -195,6 +197,13 @@ internal sealed class PermissionTap : Stream
 			string deny = ToolRisk.Check(tool);
 			if (deny == null)
 			{
+				// 自动还原点 hook:权限放行后、工具体执行前(2026-10-06)。
+				// best-effort:hook 自身不抛异常,这里再兜一层——还原点任何问题绝不阻断工具调用。
+				if (_restorePointHook != null)
+				{
+					try { _restorePointHook.BeforeWrite(tool, prms); }
+					catch { }
+				}
 				return false;
 			}
 			WriteDeny(idJson, tool, deny);
