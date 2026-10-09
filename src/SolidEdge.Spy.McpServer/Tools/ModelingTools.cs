@@ -93,7 +93,7 @@ namespace SolidEdge.Spy.McpServer.Tools
             "chamfer 等距倒角 {op,distance,edges};rib 筋板 {op,plane,闭合轮廓,thickness}(轮廓须闭合且 plane 贴实体表面);" +
             "hole 圆孔 {op,plane,circle|circles 或 center+diameter, mode?:through_all(默认贯穿)/finite(盲孔需depth)/next};" +
             "pattern 阵列在 SE 2022 COM 不可达(诚实拒绝,多孔阵列改用一个 cut+circles 或 hole+circles)。" +
-            "P2 扩 op(多轮廓,均需先有基体特征,首特征通道未开放):" +
+            "P2 扩 op(多轮廓;凸台在空零件上也能直接建——首特征通道已开放,除料仍需已有实体):" +
             "loft 放样 {op:'loft', profiles:[{plane,形状},...]≥2 项单闭合轮廓, origin?:[u,v] 截面锚点(缺省按形状推导), mode?:'cut'(默认凸台)};" +
             "sweep 扫掠 {op:'sweep', profiles:[首项=路径,其余=截面]}——路径用 trace 时按【线段+真圆弧混排】解释,如 trace:[{line:[[x,y],[x,y]]},{arc:{center:[x,y],start:[x,y],end:[x,y]}}](arc 取 start→end 的【劣弧】≤180°,方向由几何自动判定,段间端点须重合;要相切弯头就把圆心放在拐角的对角点,如 R20 从 (0.02,0.03) 转到 (0.04,0.05) 时 center=[0.04,0.03]),polygon 加 fillet:R 时按【顶点链自动倒圆角】展开(圆心/切点由几何算出,必然与直段相切——弯头首选,如 polygon:[[0,0],[0,0.05],[0.06,0.05]],fillet:0.02),否则按【开放链】折线解释(≥2 点不闭合),circle/rect/loops 是闭合路径(扫一整圈);" +
             "helix 螺旋 {op:'helix', plane, 单闭合截面, axis(同 revolve 的两点轴), pitch/height/revolutions 三给二(螺距m/高度m/圈数,第三个由SE推导), mode?:'cut'}。" +
@@ -2045,10 +2045,16 @@ namespace SolidEdge.Spy.McpServer.Tools
         /// 建旋转轮廓:ProfileSets.Add → Profiles.Add(plane) → 截面闭环(逐线 + 端点重合约束)
         // ============================ P2(2026-09-23):多轮廓 loft / sweep / helix ============================
         //
-        // 三个 op 的共用约定(依据 SE2022 SDK 离线文档 + 对照表情报):
-        //  - 均要求模型里已有基体特征。首特征通道(Models.AddLoftedProtrusion 18 参 /
-        //    Models.AddSweptProtrusion / Models.AddFiniteBaseHelix 后者每 Part 仅许一次)P2 统一不开放,
-        //    提示调用方先 extrude;
+        // 三个 op 的共用约定:
+        //  - 【凸台】在空零件上也能建:走首特征通道 Models.AddLoftedProtrusion(18 参)/
+        //    Models.AddSweptProtrusion(15 参)/ Models.AddFiniteBaseHelix(17 参)。
+        //    这三个方法与对应集合版(AddSimple / Add / AddFinite)的前若干个参数同序同义,
+        //    差别只在多出的段映射 / 起止面 / 相切 / 锥度等可选位(一律 igNone / 0.0 / null),
+        //    以及★返回值是【新建的 Model(设计体)】而不是特征对象——必须回取特征,
+        //    否则 FeatureResult 的 Status 校验与失败回滚都会落空。
+        //    (2026-10-08 修正:此处原写"首特征通道 P2 统一不开放",实测不成立——
+        //     那是未经验证的假设,曾迫使 sweep/loft/helix 全都要求先建占位基体。)
+        //  - 【除料】必须有材料可切,空模型上仍拒绝,提示先 extrude;
         //  - mode:"cut" 走对应 Cutouts 集合(与 revolve 的双通道同构);
         //  - 截面锚点 Origins:显式 origin > 周期截面(圆)传 0(SDK 文档明示)> 轮廓首点。
         //    非周期截面的锚点必须是轮廓上真实一点,硬编码 (0,0) 会静默无几何;
@@ -2061,15 +2067,18 @@ namespace SolidEdge.Spy.McpServer.Tools
             bool isCut = string.Equals(spec.Mode, "cut", StringComparison.OrdinalIgnoreCase);
 
             object models = Get(doc, "Models");
-            if (Count(models) == 0)
+            // 空零件也允许放样凸台:首特征走 Models.AddLoftedProtrusion(见下方实建分支)。
+            // 除料则必须有材料可切,空模型上无意义,维持拒绝。
+            bool isFirstFeature = Count(models) == 0;
+            if (isFirstFeature && isCut)
                 return new
                 {
                     op = "loft", name = name, status = "error",
-                    message = "loft 需先有基体特征(首特征放样走 Models.AddLoftedProtrusion 18 参通道,P2 未开放)——本批或前一批先 extrude。",
-                    diagnosis = "放样截面叠在已有实体上才有料可长/可切。"
+                    message = "放样除料需要已有实体(无材料可切)——先 extrude,或改用放样凸台。",
+                    diagnosis = "除料是把已有实体切掉一块,空模型没有料。"
                 };
 
-            object model = Get(models, "Item", 1);
+            object model = isFirstFeature ? null : Get(models, "Item", 1);
             var specWarnings = new List<string>();
             var profiles = new List<object>();
 
@@ -2092,21 +2101,42 @@ namespace SolidEdge.Spy.McpServer.Tools
                     origins[i] = SectionOrigin(spec.Profiles[i]);
                 }
 
-                object coll = Get(model, isCut ? "LoftedCutouts" : "LoftedProtrusions");
                 // ★ AddSimple 含 SAFEARRAY 参数(CrossSections/Origins):本机实测 IDispatch 手工封送通道
                 //   直接崩 SE(0x800706BE RPC 失败,2026-09-23,SE 2022)——与 sweep/helix 同因,必须走 PIA 强类型。
                 //   强类型 9 参 = 7 必选 + NumGuideCurves/GuideCurves(无导线传 0/null),Interop.dll 反射核实。
                 //   MaterialSide=igLeft(1)、Start/EndTangentType=igNone(44):SDK VB 示例取值。
                 Array sectionArr = sections, typeArr = types, originArr = origins;
-                object featObj = isCut
-                    ? ((SolidEdgePart.LoftedCutouts)coll).AddSimple(n, sectionArr, typeArr, originArr,
+                object featObj;
+                if (isFirstFeature)
+                {
+                    // 首特征放样:Models.AddLoftedProtrusion(18 参)。比集合版 AddSimple 多出
+                    // SegmentMaps(第 5 参)与两端的 Extent / Tangent 组;本工具不做起止面与相切控制,
+                    // 这些位置一律 igNone / 0.0 / null,语义与 AddSimple 的默认取值一致。
+                    // ★ 返回的是【新建的 Model(设计体)】而不是特征对象,必须回取特征:
+                    //   否则 FeatureResult 读 Status 会读到设计体,僵尸特征也回滚不掉。
+                    SolidEdgePart.Model created = ((SolidEdgePart.Models)models).AddLoftedProtrusion(
+                        n, sectionArr, typeArr, originArr, 0,
                         SolidEdgePart.FeaturePropertyConstants.igLeft,
-                        SolidEdgePart.FeaturePropertyConstants.igNone,
-                        SolidEdgePart.FeaturePropertyConstants.igNone, 0, null)
-                    : ((SolidEdgePart.LoftedProtrusions)coll).AddSimple(n, sectionArr, typeArr, originArr,
-                        SolidEdgePart.FeaturePropertyConstants.igLeft,
-                        SolidEdgePart.FeaturePropertyConstants.igNone,
-                        SolidEdgePart.FeaturePropertyConstants.igNone, 0, null);
+                        SolidEdgePart.FeaturePropertyConstants.igNone, 0.0, null,
+                        SolidEdgePart.FeaturePropertyConstants.igNone, 0.0, null,
+                        SolidEdgePart.FeaturePropertyConstants.igNone, 0.0,
+                        SolidEdgePart.FeaturePropertyConstants.igNone, 0.0,
+                        0, null);
+                    featObj = created.LoftedProtrusions.Item(1);
+                }
+                else
+                {
+                    object coll = Get(model, isCut ? "LoftedCutouts" : "LoftedProtrusions");
+                    featObj = isCut
+                        ? ((SolidEdgePart.LoftedCutouts)coll).AddSimple(n, sectionArr, typeArr, originArr,
+                            SolidEdgePart.FeaturePropertyConstants.igLeft,
+                            SolidEdgePart.FeaturePropertyConstants.igNone,
+                            SolidEdgePart.FeaturePropertyConstants.igNone, 0, null)
+                        : ((SolidEdgePart.LoftedProtrusions)coll).AddSimple(n, sectionArr, typeArr, originArr,
+                            SolidEdgePart.FeaturePropertyConstants.igLeft,
+                            SolidEdgePart.FeaturePropertyConstants.igNone,
+                            SolidEdgePart.FeaturePropertyConstants.igNone, 0, null);
+                }
 
                 return FeatureResult("loft", name, featObj, context, profiles.Count > 0 ? profiles[0] : null,
                     isCut ? "LoftedCutout" : "LoftedProtrusion", specWarnings,
@@ -2131,15 +2161,18 @@ namespace SolidEdge.Spy.McpServer.Tools
             bool isCut = string.Equals(spec.Mode, "cut", StringComparison.OrdinalIgnoreCase);
 
             object models = Get(doc, "Models");
-            if (Count(models) == 0)
+            // 空零件也允许扫掠凸台:首特征走 Models.AddSweptProtrusion(见下方实建分支)。
+            // 除料则必须有材料可切,空模型上无意义,维持拒绝。
+            bool isFirstFeature = Count(models) == 0;
+            if (isFirstFeature && isCut)
                 return new
                 {
                     op = "sweep", name = name, status = "error",
-                    message = "sweep 需先有基体特征(首特征扫掠走 Models.AddSweptProtrusion 通道,P2 未开放)——本批或前一批先 extrude。",
-                    diagnosis = "扫掠截面沿路径叠在已有实体上才有料可长/可切。"
+                    message = "扫掠除料需要已有实体(无材料可切)——先 extrude,或改用扫掠凸台。",
+                    diagnosis = "除料是把已有实体切掉一块,空模型没有料。"
                 };
 
-            object model = Get(models, "Item", 1);
+            object model = isFirstFeature ? null : Get(models, "Item", 1);
             var specWarnings = new List<string>();
             var profiles = new List<object>();   // [0]=路径,其余=截面
 
@@ -2181,21 +2214,37 @@ namespace SolidEdge.Spy.McpServer.Tools
                 //       CrossSectionTypes, SectionOrigins, SegmentMaps, MaterialSide(FPC),
                 //       StartExtentType(FPC), StartExtentValue, StartExtentRef,
                 //       EndExtentType(FPC), EndExtentValue, EndExtentRef)
-                var m = (SolidEdgePart.Model)model;
                 Array traceArr = new object[] { profiles[0] };
                 Array traceTypeArr = new object[] { 48 };
                 Array sectionArr = (Array)sections;   // object[] → Array,ByRef SAFEARRAY 编组
                 Array sectionTypeArr = (Array)types;
                 Array originArr = (Array)origins;
-                object featObj = isCut
-                    ? m.SweptCutouts.Add(1, traceArr, traceTypeArr, nSec, sectionArr, sectionTypeArr, originArr, 0,
-                            SolidEdgePart.FeaturePropertyConstants.igLeft,
-                            SolidEdgePart.FeaturePropertyConstants.igNone, 0.0, null,
-                            SolidEdgePart.FeaturePropertyConstants.igNone, 0.0, null)
-                    : m.SweptProtrusions.Add(1, traceArr, traceTypeArr, nSec, sectionArr, sectionTypeArr, originArr, 0,
-                            SolidEdgePart.FeaturePropertyConstants.igLeft,
-                            SolidEdgePart.FeaturePropertyConstants.igNone, 0.0, null,
-                            SolidEdgePart.FeaturePropertyConstants.igNone, 0.0, null);
+                object featObj;
+                if (isFirstFeature)
+                {
+                    // 首特征扫掠:Models.AddSweptProtrusion——15 参,与集合版 SweptProtrusions.Add 完全同签名。
+                    // ★ 返回值是【新建的 Model(设计体)】而不是特征对象,必须回取特征:
+                    //   否则 FeatureResult 读 Status 会读到设计体,僵尸特征也回滚不掉。
+                    SolidEdgePart.Model created = ((SolidEdgePart.Models)models).AddSweptProtrusion(
+                        1, traceArr, traceTypeArr, nSec, sectionArr, sectionTypeArr, originArr, 0,
+                        SolidEdgePart.FeaturePropertyConstants.igLeft,
+                        SolidEdgePart.FeaturePropertyConstants.igNone, 0.0, null,
+                        SolidEdgePart.FeaturePropertyConstants.igNone, 0.0, null);
+                    featObj = created.SweptProtrusions.Item(1);
+                }
+                else
+                {
+                    var m = (SolidEdgePart.Model)model;
+                    featObj = isCut
+                        ? m.SweptCutouts.Add(1, traceArr, traceTypeArr, nSec, sectionArr, sectionTypeArr, originArr, 0,
+                                SolidEdgePart.FeaturePropertyConstants.igLeft,
+                                SolidEdgePart.FeaturePropertyConstants.igNone, 0.0, null,
+                                SolidEdgePart.FeaturePropertyConstants.igNone, 0.0, null)
+                        : m.SweptProtrusions.Add(1, traceArr, traceTypeArr, nSec, sectionArr, sectionTypeArr, originArr, 0,
+                                SolidEdgePart.FeaturePropertyConstants.igLeft,
+                                SolidEdgePart.FeaturePropertyConstants.igNone, 0.0, null,
+                                SolidEdgePart.FeaturePropertyConstants.igNone, 0.0, null);
+                }
 
                 return FeatureResult("sweep", name, featObj, context, profiles.Count > 0 ? profiles[0] : null,
                     isCut ? "SweptCutout" : "SweptProtrusion", specWarnings,
@@ -2222,15 +2271,18 @@ namespace SolidEdge.Spy.McpServer.Tools
             bool isCut = string.Equals(spec.Mode, "cut", StringComparison.OrdinalIgnoreCase);
 
             object models = Get(doc, "Models");
-            if (Count(models) == 0)
+            // 空零件也允许螺旋凸台:首特征走 Models.AddFiniteBaseHelix(见下方实建分支)。
+            // 除料同上,必须有材料可切。
+            bool isFirstFeature = Count(models) == 0;
+            if (isFirstFeature && isCut)
                 return new
                 {
                     op = "helix", name = name, status = "error",
-                    message = "helix 需先有基体特征(首特征螺旋走 Models.AddFiniteBaseHelix 且每 Part 仅许一次,P2 未开放)——本批或前一批先 extrude。",
-                    diagnosis = "先 extrude 一个基体,螺旋特征叠在其上。"
+                    message = "螺旋除料需要已有实体(无材料可切)——先 extrude,或改用螺旋凸台。",
+                    diagnosis = "除料是把已有实体切掉一块,空模型没有料。"
                 };
 
-            object model = Get(models, "Item", 1);
+            object model = isFirstFeature ? null : Get(models, "Item", 1);
             var specWarnings = new List<string>();
 
             object plane = ResolvePlane(context, doc, spec.PlaneRef, namedPlanes);
@@ -2251,7 +2303,22 @@ namespace SolidEdge.Spy.McpServer.Tools
             {
                 Array csArr = new object[] { profile };
                 object featObj;
-                if (isCut)
+                if (isFirstFeature)
+                {
+                    // 首特征螺旋:Models.AddFiniteBaseHelix(17 参)。前 9 参与集合版 AddFinite 同序同义,
+                    // 其后 8 参是锥角/端部螺距/起止面等可选控制,本工具不涉及,一律 null。
+                    // ★ 返回的是【新建的 Model(设计体)】而不是特征对象,必须回取特征:
+                    //   否则 FeatureResult 读 Status 会读到设计体,僵尸特征也回滚不掉。
+                    SolidEdgePart.Model created = ((SolidEdgePart.Models)models).AddFiniteBaseHelix(
+                        (SolidEdgePart.RefAxis)pair[1],
+                        SolidEdgePart.FeaturePropertyConstants.igStart, 1, ref csArr,
+                        SolidEdgePart.FeaturePropertyConstants.igRight,
+                        height, pitch, turns,
+                        SolidEdgePart.FeaturePropertyConstants.igRight,
+                        null, null, null, null, null, null, null, null);
+                    featObj = created.HelixProtrusions.Item(1);
+                }
+                else if (isCut)
                 {
                     featObj = ((SolidEdgePart.Model)model).HelixCutouts.AddFinite(
                         (SolidEdgePart.RefAxis)pair[1],
