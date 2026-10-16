@@ -197,6 +197,21 @@ scripts/                            # helper scripts (interop generation)
 
 558 unit tests across the two xUnit projects (`dotnet test solidedge-mcp.sln`).
 
+## A middle layer, not a raw API
+
+The server does not hand the AI a bare COM surface to drive. Between the AI and Solid Edge sits a thin middle layer that does the repetitive remembering for it:
+
+- **Recipe layer** — a verified call chain (which member, in what order, with which arguments) is written down once, as static, validatable JSON. The AI states an intent instead of re-assembling a COM call chain from memory on every run.
+- **Feature-spec IR** — modeling is declarative: the AI describes *what* the feature is (profile, extent, direction), and the layer turns that into the concrete Solid Edge call sequence.
+
+The point is to cut what the AI has to hold in its head: no member names or argument order to memorize, a static check before anything touches the model, and the same verified chain reused instead of re-derived.
+
+## Not limited to the built-in tools
+
+The 22 tools are a curated starting point, not a ceiling. `se_invoke_member` and `se_invoke_chain` call any COM member dynamically on a handle the AI already holds, so in principle the whole Solid Edge API surface is reachable — including members this project ships no wrapper for. And because the layer can enumerate an object's members by reflection, the AI can *discover* what a part, a face or a feature actually exposes and read design information straight out of the model, instead of being confined to a fixed set of readers.
+
+That reach is also why dynamic calls sit in a higher risk tier: they skip the static validation that the recipe and IR paths get on the way in.
+
 ## Development
 
 ```powershell
