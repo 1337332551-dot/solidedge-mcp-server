@@ -32,3 +32,6 @@ SolidEdgeFrameworkSupport.dll
 
 # Prebuilt binaries: published as GitHub Release assets, not tracked in git
 release/
+
+# Local OpenCode MCP config (contains machine-specific absolute paths)
+opencode.json
