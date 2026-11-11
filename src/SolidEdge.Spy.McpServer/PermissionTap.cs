@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using SolidEdge.Spy.McpServer.Tools;
@@ -22,8 +23,9 @@ namespace SolidEdge.Spy.McpServer;
 /// </code>
 ///
 /// 原理:
-/// - 逐行扫描请求流;完整解析出 tools/call 的工具名 → ToolRisk.Check。
+/// - 逐行扫描请求流;完整解析出 tools/call 的工具名 → 别名层(ToolAliases,命中旧名先改写)→ ToolRisk.Check。
 /// - 放行:原始字节原样下发(不做任何改写,协议零干扰)。
+/// - 改写放行(别名命中):params.name 换新名 + arguments 按映射变换后入队;审计记 alias old→new。
 /// - 拒绝:该行**不进 SDK**(工具体完全不执行),直接向响应流伪造一条
 ///   JSON-RPC result(isError=true, text=拒绝原因+切换指路)。AI 能看到原因。
 /// - 拒绝同时落 mcp-audit.log(AuditLog),与工具内拒绝同一份审计。
@@ -194,24 +196,133 @@ internal sealed class PermissionTap : Stream
 			{
 				return false;
 			}
-			string deny = ToolRisk.Check(tool);
-			if (deny == null)
+
+			// 别名层(2026-11-07 工具面精简):旧工具名透明改写为新名。
+			// 未命中别名表(绝对多数路径)→ 行为与从前逐字节一致,零开销零改写。
+			ToolAliases.AliasMapping alias;
+			if (!ToolAliases.TryResolve(tool, out alias))
 			{
-				// 自动还原点 hook:权限放行后、工具体执行前(2026-10-06)。
-				// best-effort:hook 自身不抛异常,这里再兜一层——还原点任何问题绝不阻断工具调用。
-				if (_restorePointHook != null)
+				// readonly 特例(带参数感知):se_model_build 且 dryRun=true 是纯静态校验,不碰 COM,
+				// 按 Read 档放行(se_validate_features 并入后的只读离线校验保底,见 ToolRisk.Check 重载)。
+				string deny = ToolRisk.Check(tool, TryGetArgumentsBool(prms, "dryRun"));
+				if (deny == null)
 				{
-					try { _restorePointHook.BeforeWrite(tool, prms); }
-					catch { }
+					// 自动还原点 hook:权限放行后、工具体执行前(2026-10-06)。
+					// best-effort:hook 自身不抛异常,这里再兜一层——还原点任何问题绝不阻断工具调用。
+					if (_restorePointHook != null)
+					{
+						try { _restorePointHook.BeforeWrite(tool, prms); }
+						catch { }
+					}
+					return false;
 				}
-				return false;
+				WriteDeny(idJson, tool, deny);
+				AuditLog.Write(tool, "-", "(tools/call)", false, "-", InvocationRisk.ModelChanging, false,
+					"denied by permission layer, mode=" + ToolRisk.Mode);
+				return true;
 			}
-			WriteDeny(idJson, tool, deny);
-			AuditLog.Write(tool, "-", "(tools/call)", false, "-", InvocationRisk.ModelChanging, false,
-				"denied by permission layer, mode=" + ToolRisk.Mode);
+
+			// 别名命中:先按映射把行改写出来(纯字符串变换),门禁/hook 全部基于【改写后】的请求判定——
+			// 映射注入的参数(如 dryRun:true)必须参与门禁,否则 readonly 下"别名+注入 dryRun"永远被拒。
+			string effectiveTool = alias.Target;
+			string rewritten = RewriteLine(line, alias);
+			if (rewritten == null)
+			{
+				// 改写失败兜底:宁可拒绝也不把坏行交给 SDK(铁律①同源:不吞行,给 AI 可读原因)。
+				WriteDeny(idJson, tool, "别名路由改写失败(" + tool + " → " + effectiveTool + "),请求 JSON 格式异常。");
+				AuditLog.Write(tool, "-", "(tools/call alias)", false, "-", InvocationRisk.Normal, false,
+					"alias rewrite failed → " + effectiveTool);
+				return true;
+			}
+			string aliasDeny;
+			try
+			{
+				using (JsonDocument rewrittenDoc = JsonDocument.Parse(rewritten))
+				{
+					JsonElement rp = rewrittenDoc.RootElement;
+					aliasDeny = ToolRisk.Check(effectiveTool,
+						(rp.ValueKind == JsonValueKind.Object && rp.TryGetProperty("params", out rp))
+							? TryGetArgumentsBool(rp, "dryRun") : false);
+					if (aliasDeny == null && _restorePointHook != null)
+					{
+						// 改写后的参数喂还原点 hook(新名+变换后 arguments;hook 自身按档位/dryRun 决定是否打点)
+						_restorePointHook.BeforeWrite(effectiveTool, rp);
+					}
+				}
+			}
+			catch
+			{
+				aliasDeny = "别名改写行解析失败(内部错误)。";
+			}
+			if (aliasDeny != null)
+			{
+				WriteDeny(idJson, tool, aliasDeny);
+				AuditLog.Write(tool, "-", "(tools/call alias)", false, "-", InvocationRisk.ModelChanging, false,
+					"denied by permission layer after alias " + tool + " → " + effectiveTool + ", mode=" + ToolRisk.Mode);
+				return true;
+			}
+			_outgoing.Enqueue(Encoding.UTF8.GetBytes(rewritten));
+			AuditLog.Write(tool, "-", "(tools/call alias)", false, "-", InvocationRisk.Normal, true,
+				"alias " + tool + " → " + effectiveTool + (alias.Note == null ? "" : " (" + alias.Note + ")"));
 			return true;
 		}
 	}
+
+	/// <summary>读 arguments 下的布尔参数;兼容平铺在 params 顶层的历史形态。缺省 false。</summary>
+	private static bool TryGetArgumentsBool(JsonElement prms, string name)
+	{
+		if (prms.ValueKind != JsonValueKind.Object)
+		{
+			return false;
+		}
+		if (prms.TryGetProperty("arguments", out JsonElement args)
+			&& args.ValueKind == JsonValueKind.Object
+			&& args.TryGetProperty(name, out JsonElement v)
+			&& (v.ValueKind == JsonValueKind.True || v.ValueKind == JsonValueKind.False))
+		{
+			return v.GetBoolean();
+		}
+		if (prms.TryGetProperty(name, out JsonElement v2)
+			&& (v2.ValueKind == JsonValueKind.True || v2.ValueKind == JsonValueKind.False))
+		{
+			return v2.GetBoolean();
+		}
+		return false;
+	}
+
+		/// <summary>按别名映射改写一行 tools/call:params.name 换新名,arguments 按映射变换。失败返回 null(调用方拒绝兜底)。</summary>
+		private static string RewriteLine(string line, ToolAliases.AliasMapping alias)
+		{
+			try
+			{
+				JsonNode node = JsonNode.Parse(line);
+				if (node == null)
+				{
+					return null;
+				}
+				JsonObject prmsObj = node["params"] as JsonObject;
+				if (prmsObj == null)
+				{
+					return null;
+				}
+				prmsObj["name"] = alias.Target;
+				JsonObject args = prmsObj["arguments"] as JsonObject;
+				if (args == null)
+				{
+					args = new JsonObject();
+					prmsObj["arguments"] = args;
+				}
+				if (alias.TransformArguments != null)
+				{
+					alias.TransformArguments(args);
+				}
+				return node.ToJsonString(JsonOpts) + "\n";
+			}
+			catch
+			{
+				return null;
+			}
+		}
 
 	// 拒绝文案含中文,用宽松编码器避免 \uXXXX 转义(生成的是 JSON 字符串字面量,无 HTML 注入面)
 	private static readonly JsonSerializerOptions JsonOpts = new JsonSerializerOptions

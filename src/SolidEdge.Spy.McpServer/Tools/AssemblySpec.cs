@@ -31,17 +31,28 @@ namespace SolidEdge.Spy.McpServer.Tools
         internal static readonly string[] SupportedOps = new[]
         {
             "place", "move", "rotate", "transform", "origin", "visible",
-            "ground", "delete", "replace", "reorder", "color", "constrain"
+            "ground", "delete", "replace", "reorder", "color", "constrain", "rebind"
         };
 
         /// <summary>
-        /// 诚实拒绝的 op:来源项目(SE2025/2026)实测 COM 自动化不可达,
+        /// 诚实拒绝的 op:实测 COM 自动化不可达或本工具未实现的 op,
         /// 校验期即拦截并给出替代方案,不让 AI 对着 COM 瞎试。
+        /// mirror/suppress/unsuppress:COM 通道实测不可达(来源项目 SE2025/2026;suppress 三条晚绑定
+        /// 封送通道 2026-11-01 在 SE222.00.00.132 本机复现全灭)。
+        /// pattern:COM 通道实测可达(AssemblyPatterns.CreateDuplicate,2026-11-01 SE222 真机成功,
+        /// 新副本落位=master+(to−from) 语义正确)——只是本工具未实现该 op,拒绝文案给替代方案,
+        /// 不得再表述为"不可达"。来源项目 E_ACCESSDENIED 的是 AssemblyFeaturesPatterns(装配【加工
+        /// 特征】阵列,挂在 AssemblyFeatures 下),与 occurrence 阵列不是一条通道,勿再混为一谈。
         /// </summary>
         private static readonly Dictionary<string, string> RefusedOps = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["pattern"] = "装配级特征/零件阵列不可用:来源项目实测 AssemblyFeaturesPatterns.Add 返回 E_ACCESSDENIED(0x80070005)。"
-                + "替代:用 place op 按矩阵放多份副本(阵列=多个 place),或把阵列做在零件文档里。",
+            ["pattern"] = "本工具暂未实现装配 pattern op,但 COM 通道本身可达(2026-11-01 SE222 真机实测):"
+                + "装配级 occurrence 阵列走 AssemblyDocument.AssemblyPatterns(Create/CreateAlongCurve/CreateDuplicate);"
+                + "来源项目实测 E_ACCESSDENIED 的是 AssemblyFeaturesPatterns(装配【加工特征】阵列,挂在 AssemblyFeatures 下),两者不是一条通道。"
+                + "替代:①用 place op 按矩阵放多份副本(阵列=多个 place);"
+                + "②需真阵列时用 se_script_run 走编译期强类型调用 AssemblyPatterns.CreateDuplicate"
+                + "(PatternName, NumberOfMasters, ref Array MasterOccurrences, FromOccurrence, NumberOfToOccurrences, ref Array ToOccurrences)"
+                + "——晚绑定 InvokeMember 解析不到该属性,必须强类型 interop;③简单阵列做在零件文档里(零件级 pattern op 已开放)。",
             ["mirror"] = "装配级镜像不可用:来源项目实测 AssemblyFeaturesMirrors.Add 返回 E_ACCESSDENIED(0x80070005)。"
                 + "替代:用 place op 放副本并给 transform op 设镜像矩阵(旋转 180°+平移),或在零件文档里镜像特征。",
             ["suppress"] = "压缩零件在本环境不可达:官方签名是 SetSuppressComponent(OccurrenceToSuppress, " +
@@ -103,8 +114,12 @@ namespace SolidEdge.Spy.McpServer.Tools
             public object CompRef;        // int(0-based)/string(名字或 obj-N)
             public object Comp2Ref;
             public object TargetRef;
-            public int Face1;
-            public int Face2;
+            /// <summary>
+            /// 约束面引用:int(0-based 面序号) / string(面句柄 "obj-N" 或几何描述符 "cylinder:dia=89") /
+            /// FaceSelector(JSON 描述符对象)。null=没给(校验期会报错)。
+            /// </summary>
+            public object Face1Ref;
+            public object Face2Ref;
             public string File;
             public string FamilyMember;
             public double[] Matrix;       // 16
@@ -123,6 +138,8 @@ namespace SolidEdge.Spy.McpServer.Tools
             public bool PlaceGround = true; // place: false=放置后立即解固(删默认 GroundRelation3d)
             public bool All;              // replace ReplaceAll
             public string ConstrainType;
+            /// <summary>rebind: 要重绑的关系 0-based 序号;-1 = 自动处理全部 detailed_status=6 的关系。</summary>
+            public int RelationIndex = -1;
             public bool Destructive;      // delete / replace / unground
         }
 
@@ -190,6 +207,7 @@ namespace SolidEdge.Spy.McpServer.Tools
                 case "reorder": ValidateReorder(e, index, op, report); break;
                 case "color": ValidateColor(e, index, op, report); break;
                 case "constrain": ValidateConstrain(e, index, op, report); break;
+                case "rebind": ValidateRebind(e, index, op, report); break;
             }
             return op;
         }
@@ -262,9 +280,27 @@ namespace SolidEdge.Spy.McpServer.Tools
             op.CompRef = GetComponent(e);
             if (op.CompRef == null) { RequireComponent(r, i, "transform"); return; }
             op.Position = GetDoubleArray(e, "origin");
+
+            // 矩阵模式(斜置姿态):给 16 元素行主序矩阵就够,不需要 origin/angles。
+            op.Matrix = GetDoubleArray(e, "matrix");
+            if (op.Matrix != null)
+            {
+                if (op.Matrix.Length != 16)
+                {
+                    AddError(r, i, "transform", "matrix", "E143",
+                        "matrix 必须是 16 个数(行主序 4x4,平移在索引 12/13/14,单位米)。");
+                    return;
+                }
+                if (op.Position != null)
+                    AddWarning(r, i, "transform", "origin", "W144",
+                        "matrix 与 origin 同时给了:矩阵是绝对姿态,origin 被忽略。");
+                op.Angles = null;
+                return;
+            }
+
             if (op.Position == null || op.Position.Length != 3)
             {
-                AddError(r, i, "transform", "origin", "E140", "transform 需要 origin:[x,y,z](米)。");
+                AddError(r, i, "transform", "origin", "E140", "transform 需要 origin:[x,y,z](米),或 matrix:[16 个数]。");
                 return;
             }
             op.Angles = GetDoubleArray(e, "angles");
@@ -407,11 +443,21 @@ namespace SolidEdge.Spy.McpServer.Tools
                     "constrain 需要 component1 与 component2(0-based 序号、名称或 obj-N)。");
                 return;
             }
-            if (TryInt(e, "face1", out int f1)) op.Face1 = f1;
-            if (TryInt(e, "face2", out int f2)) op.Face2 = f2;
-            if (op.Face1 < 0 || op.Face2 < 0)
+            string ferr;
+            op.Face1Ref = ParseFaceRef(e, "face1", out ferr);
+            if (ferr != null) { AddError(r, i, "constrain", "face1", "E191", ferr); return; }
+            op.Face2Ref = ParseFaceRef(e, "face2", out ferr);
+            if (ferr != null) { AddError(r, i, "constrain", "face2", "E191", ferr); return; }
+            if (op.Face1Ref == null || op.Face2Ref == null)
             {
-                AddError(r, i, "constrain", "face1/face2", "E187", "face1/face2 是 0-based 面序号,不能为负。");
+                // 以前这里默认 0 —— 等于"闷声绑到第 0 张面",是最坏的一种绑定。缺参数就报错。
+                AddError(r, i, "constrain", "face1/face2", "E187",
+                    "constrain 必须给 face1 与 face2。三种写法(推荐描述符):\n"
+                    + "  ① 描述符对象 {\"type\":\"cylinder\",\"diaMm\":89} / {\"type\":\"plane\",\"normal\":\"-Z\"} —— 按几何认面,"
+                    + "零件重建后序号漂移也不影响;\n"
+                    + "  ② 描述符字符串 \"cylinder:dia=89\" / \"plane:normal=-Z;at=0,0,0\";\n"
+                    + "  ③ 0-based 面序号 1(★加/删特征后序号会整体漂移,重跑配方会绑到别的面上);\n"
+                    + "  ④ 面句柄 \"obj-N\"(se_find_objects 返回的 handle)。");
                 return;
             }
             if (TryBool(e, "mate", out bool m)) op.Mate = m;
@@ -430,6 +476,139 @@ namespace SolidEdge.Spy.McpServer.Tools
                 AddWarning(r, i, "constrain", "mate", "W188",
                     "axial 约束的 mate 参数一般不敏感(共轴两种取值等效),省略即可。");
             }
+        }
+
+        // ---------------- rebind 校验 ----------------
+
+        /// <summary>
+        /// rebind:救「零件重建后约束引用的面没了」(detailed_status=6)。
+        /// 只需要 relation(可省略=自动全扫);face1/face2 可选,给了就覆盖自动认面。
+        /// </summary>
+        private static void ValidateRebind(JsonElement e, int i, AssemblyOp op, AssemblyReport r)
+        {
+            op.RelationIndex = -1;
+            if (e.TryGetProperty("relation", out JsonElement rv) && rv.ValueKind != JsonValueKind.Null)
+            {
+                if (rv.ValueKind == JsonValueKind.Number && rv.TryGetInt32(out int idx))
+                {
+                    if (idx < 0)
+                    {
+                        AddError(r, i, "rebind", "relation", "E192", "relation 是 0-based 关系序号,不能为负。");
+                        return;
+                    }
+                    op.RelationIndex = idx;
+                }
+                else if (rv.ValueKind == JsonValueKind.String)
+                {
+                    string s = (rv.GetString() ?? "").Trim().ToLowerInvariant();
+                    if (s != "auto" && s.Length > 0)
+                    {
+                        AddError(r, i, "rebind", "relation", "E192",
+                            "relation 要 0-based 序号(数字)或 \"auto\";省略 = auto(处理全部 detailed_status=6 的关系)。");
+                        return;
+                    }
+                    op.RelationIndex = -1;
+                }
+                else
+                {
+                    AddError(r, i, "rebind", "relation", "E192", "relation 要数字序号或 \"auto\"。");
+                    return;
+                }
+            }
+
+            string ferr;
+            op.Face1Ref = ParseFaceRef(e, "face1", out ferr);
+            if (ferr != null) { AddError(r, i, "rebind", "face1", "E191", ferr); return; }
+            op.Face2Ref = ParseFaceRef(e, "face2", out ferr);
+            if (ferr != null) { AddError(r, i, "rebind", "face2", "E191", ferr); return; }
+
+            if (op.RelationIndex < 0 && op.Face1Ref != null && op.Face2Ref == null)
+            {
+                AddWarning(r, i, "rebind", "face1", "W193",
+                    "自动模式(relation 省略)下给了 face1 但没给 face2:命中多条关系时 face1 会套到每条关系上,"
+                    + "通常不是你想要的 —— 建议先 se_assembly_query mode=relations 看清哪条坏了,再指定 relation。");
+            }
+        }
+
+        // ---------------- 约束面引用解析 ----------------
+
+        /// <summary>
+        /// 解析 face1 / face2。支持四种写法,返回 int / string / FaceSelector,统一交给运行期 BuildFaceBinding 解析。
+        /// 解析不出就返回 null 并给 error(调用方报错,不猜)。
+        /// </summary>
+        private static object ParseFaceRef(JsonElement e, string name, out string error)
+        {
+            error = null;
+            if (!e.TryGetProperty(name, out JsonElement v) || v.ValueKind == JsonValueKind.Null
+                || v.ValueKind == JsonValueKind.Undefined)
+                return null;
+
+            if (v.ValueKind == JsonValueKind.Number)
+            {
+                int idx;
+                if (!v.TryGetInt32(out idx))
+                {
+                    error = name + " 要整数面序号。";
+                    return null;
+                }
+                if (idx < 0)
+                {
+                    error = name + "=" + idx + " 是 0-based 面序号,不能为负。";
+                    return null;
+                }
+                return idx;
+            }
+
+            if (v.ValueKind == JsonValueKind.String)
+            {
+                string s = v.GetString();
+                if (string.IsNullOrWhiteSpace(s))
+                {
+                    error = name + " 是空字符串。";
+                    return null;
+                }
+                s = s.Trim();
+                if (s.StartsWith("obj-", StringComparison.OrdinalIgnoreCase)) return s;   // 句柄,运行期取
+                FaceSelector sel = FaceSelector.FromString(s, out error);
+                if (sel == null)
+                {
+                    error = name + " 描述符解析失败: " + error;
+                    return null;
+                }
+                return sel;
+            }
+
+            if (v.ValueKind == JsonValueKind.Object)
+            {
+                if (v.TryGetProperty("handle", out JsonElement h) && h.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(h.GetString()))
+                    return h.GetString().Trim();
+                if (v.TryGetProperty("index", out JsonElement ix) && ix.ValueKind == JsonValueKind.Number
+                    && ix.TryGetInt32(out int i2))
+                {
+                    if (i2 < 0)
+                    {
+                        error = name + ".index=" + i2 + " 不能为负。";
+                        return null;
+                    }
+                    return i2;
+                }
+                FaceSelector sel = FaceSelector.FromJson(v, out error);
+                if (sel == null)
+                {
+                    error = name + " 描述符无效: " + error;
+                    return null;
+                }
+                if (sel.IsEmpty)
+                {
+                    error = name + " 是空描述符:至少给 type/diaMm/atMm/normal/lenMm 之一。";
+                    return null;
+                }
+                return sel;
+            }
+
+            error = name + " 写法不支持:要 0-based 序号(数字) / 描述符字符串 / 描述符对象 / {\"handle\":\"obj-N\"}。";
+            return null;
         }
 
         // ---------------- 组件引用解析辅助 ----------------
@@ -594,25 +773,10 @@ namespace SolidEdge.Spy.McpServer.Tools
                 throw new InvalidOperationException("写属性 " + name + " 失败: " + (err != null ? DescribeEx(err) : "未知错误"), err);
         }
 
-        /// <summary>异常描述:展开 InnerException 链 + HRESULT,不让 TargetInvocationException 吞掉真实原因。</summary>
+        /// <summary>异常描述:展开 InnerException 链 + HRESULT,不让 TargetInvocationException 吞掉真实原因。(P2-1:逻辑已收编至 EvidenceContract,保留入口兼容既有调用)</summary>
         internal static string DescribeEx(Exception ex)
         {
-            if (ex == null) return "null";
-            var sb = new System.Text.StringBuilder();
-            Exception cur = ex;
-            int depth = 0;
-            while (cur != null && depth < 6)
-            {
-                if (depth > 0) sb.Append(" <= ");
-                sb.Append(cur.GetType().Name);
-                int hr = cur.HResult;
-                if (hr != 0) sb.Append(" hr=0x").Append(hr.ToString("X8"));
-                string msg = cur.Message;
-                if (!string.IsNullOrEmpty(msg)) sb.Append(" (").Append(msg).Append(")");
-                cur = cur.InnerException;
-                depth++;
-            }
-            return sb.ToString();
+            return EvidenceContract.DescribeException(ex);
         }
 
         /// <summary>

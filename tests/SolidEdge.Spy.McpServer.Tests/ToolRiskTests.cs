@@ -17,6 +17,7 @@ namespace SolidEdge.Spy.McpServer.Tests
     /// ③ 未登记工具 fail-closed 拒绝;
     /// ④ PermissionTap 在传输层拦截:被拒请求不进 SDK,伪造 isError 结果;放行请求字节原样透传。
     /// </summary>
+    [Collection("ToolRiskStaticMode")] // 与 ToolAliasTests 串行:ToolRisk.Mode 是全局静态,并行会互踩
     public class ToolRiskTests : IDisposable
     {
         public void Dispose()
@@ -45,11 +46,17 @@ namespace SolidEdge.Spy.McpServer.Tests
         }
 
         [Fact]
-        public void 登记表恰好22个工具()
+        public void 登记表恰好25个工具()
         {
             // 21(合流前) + se_assembly_build + se_assembly_query(远端装配域,2026-09-22)
             // - se_extrude_on_face(2026-10-05 用户拍板删除,能力由 se_model_build 的 face 锚定覆盖)
-            Assert.Equal(22, ToolRisk.RegisteredTools.Count());
+            // + se_read_model_state(2026-10-23 拓扑读取) + se_model_state_snapshot(2026-10-23 拓扑快照/差异)
+            // + se_find_objects + se_set_feature_parameter + se_verify_model + se_save_document(2026-10-25 补登记)
+            // - se_validate_features(2026-11-07 并入 se_model_build dryRun,旧名走 ToolAliases 别名路由)
+            // - se_model_state_snapshot(2026-11-07 并入 se_snapshot_diff scope=faces,旧名走 ToolAliases)
+            // - se_verify_model(2026-11-07 并入 se_read_model_state verify=expects,旧名走 ToolAliases)
+            // 纪律:加/删工具必须同时改这里 + mcp-tools.md + SKILL.md §2.1(verify.ps1 只查后两处)
+            Assert.Equal(25, ToolRisk.RegisteredTools.Count());
         }
 
         [Theory]
@@ -60,11 +67,12 @@ namespace SolidEdge.Spy.McpServer.Tests
         [InlineData("se_walk_object", "Read")]
         [InlineData("se_batch_read", "Read")]
         [InlineData("se_read_geometry", "Read")]
+        [InlineData("se_find_objects", "Read")]
         [InlineData("se_get_variables", "Read")]
         [InlineData("se_view_context", "Read")]
         [InlineData("se_capture_viewport", "Read")]
         [InlineData("se_snapshot_diff", "Read")]
-        [InlineData("se_validate_features", "Read")]
+        [InlineData("se_read_model_state", "Read")]
         [InlineData("se_open_document", "Session")]
         [InlineData("se_new_document", "Session")]
         [InlineData("se_close_document", "Session")]
@@ -310,6 +318,65 @@ namespace SolidEdge.Spy.McpServer.Tests
 
             Assert.DoesNotContain("se_script_run", outText);
             Assert.Contains("\"id\":21", Encoding.UTF8.GetString(sink.ToArray()));
+        }
+
+        // ---------- CLI 写命令映射(F-09 回归钉,2026-10-25 审计) ----------
+        // 放入本测试类(而非独立类):ToolRisk.Mode 是全局静态,与 PermissionTap 用例并行会互相踩踏;
+        // 同一类内 xunit 串行执行,消除静态状态竞态。
+        // 背景:--assembly 此前漏映射 ToolNameOfWriteCommand,导致还原点不打、readonly 的 CLI 档位门禁跳过
+        // (当时仅靠 AssemblyBuildTools 内层 ReadOnlyEnabled 兜底,engineer 语义与 MCP 侧不一致)。
+
+        [Theory]
+        [InlineData("--newpart", "se_new_document")]
+        [InlineData("--newclose", "se_close_document")]
+        [InlineData("--model", "se_model_build")]
+        [InlineData("--set", "se_invoke_member")]
+        [InlineData("--openclose", "se_open_document")]
+        [InlineData("--cs", "se_script_run")]
+        [InlineData("--recipe-run", "se_recipe_run")]
+        [InlineData("--assembly", "se_assembly_build")]
+        public void CLI写命令映射到正确工具(string command, string expected)
+        {
+            Assert.Equal(expected, CliRunner.ToolNameOfWriteCommand(command));
+        }
+
+        [Theory]
+        [InlineData("--assemblyquery")]
+        [InlineData("--doc")]
+        [InlineData("--selection")]
+        [InlineData("--walk")]
+        [InlineData("--geometry")]
+        [InlineData("--modelsnap")]
+        [InlineData("--modelstate")]
+        [InlineData("--snap")]
+        [InlineData("--batchread")]
+        [InlineData("--viewctx")]
+        [InlineData("--version")]
+        [InlineData("--usage")]
+        [InlineData("--recipes")]
+        [InlineData("--ASSEMBLY")] // 大写:Run 里先 ToLowerInvariant 再映射,映射表只认小写
+        public void CLI非写命令或大小写不符不映射(string command)
+        {
+            Assert.Null(CliRunner.ToolNameOfWriteCommand(command));
+        }
+
+        [Fact]
+        public void CLI映射表全部登记且readonly下被拒并带切换指路()
+        {
+            string[] writeCommands =
+            {
+                "--newpart", "--newclose", "--model", "--set",
+                "--openclose", "--cs", "--recipe-run", "--assembly",
+            };
+            ToolRisk.Configure("readonly", null);
+            foreach (string cmd in writeCommands)
+            {
+                string tool = CliRunner.ToolNameOfWriteCommand(cmd);
+                Assert.False(string.IsNullOrEmpty(tool), cmd + " 未映射,写命令会绕过档位门禁");
+                string reason = ToolRisk.Check(tool);
+                Assert.True(reason != null, cmd + " → " + tool + " 在 readonly 下未被拒绝");
+                Assert.True(reason.Contains("SE_MCP_MODE"), cmd + " → " + tool + " 拒绝理由缺切换指路: " + reason);
+            }
         }
 
         private static byte[] ReadAll(Stream s)

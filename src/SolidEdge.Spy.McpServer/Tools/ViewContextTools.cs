@@ -29,11 +29,14 @@ namespace SolidEdge.Spy.McpServer.Tools;
 public static class ViewContextTools
 {
 	[McpServerTool]
-	[Description("工程图'视图 ↔ 编辑上下文'映射判定与坐标换算。action=map(默认):列出图页上每个 DrawingView 与每个'数字名 sheet'(视图编辑上下文)的配对结果 —— 判据是 DrawingView.GetReferenceToGraphicMember(上下文对象, out Reference) 成功(不属于时抛 0x80040225),这是唯一权威判据;2D 约束(AddKeypoint/AddPointOn)允许跨上下文建立,绝不能拿来判归属。action=convert:在'视图坐标'与'图纸坐标'之间换算(view.ViewToSheet / SheetToView),建标注前必须先换算,否则标注会飘到图外。只读,不修改图纸。")]
+	[Description("工程图'视图 ↔ 编辑上下文'映射判定与坐标换算。action=map(默认):列出图页上每个 DrawingView 与每个'数字名 sheet'" +
+		"(视图编辑上下文)的配对结果——判据是 DrawingView.GetReferenceToGraphicMember 成功(不属于时抛 0x80040225),这是唯一权威判据;" +
+		"2D 约束(AddKeypoint/AddPointOn)可跨上下文建立,绝不能拿来判归属。action=convert:在视图坐标与图纸坐标之间换算" +
+		"(ViewToSheet/SheetToView),建标注前必须先换算,否则标注会飘到图外。只读。")]
 	public static string se_view_context(
 		SolidEdgeContext context,
 		[Description("动作:map=列出视图↔上下文映射(默认);convert=坐标换算")] string action = "map",
-		[Description("map 可选:指定图页(obj-N 或 sheet 名,如 \"Sheet1\");省略=自动取第一个含 Dimensions 的非数字名 sheet")] string sheet = null,
+		[Description("map 可选:指定图页的 sheet 名(非数字名,如 \"Sheet1\";不支持 obj-N 句柄);省略=自动取第一个含 Dimensions 的非数字名 sheet")] string sheet = null,
 		[Description("convert 必填:视图的 obj-N 或视图名(如 \"30861\")")] string view = null,
 		[Description("convert 可选:换算方向 view=视图坐标→图纸坐标(默认,建标注用);sheet=图纸坐标→视图坐标")] string from = "view",
 		[Description("convert 必填:x 坐标(内部单位米;UI 毫米 ÷1000)")] double? x = null,
@@ -397,17 +400,7 @@ public static class ViewContextTools
 
 	private static string DescribeException(Exception ex)
 	{
-		if (ex == null) return "(未知错误)";
-		StringBuilder stringBuilder = new StringBuilder();
-		for (Exception exception = ex; exception != null; exception = exception.InnerException)
-		{
-			if (stringBuilder.Length > 0) stringBuilder.Append(" <- ");
-			stringBuilder.Append(exception.GetType().Name).Append(": ").Append(exception.Message);
-			if (exception is COMException comException)
-			{
-				stringBuilder.Append(" (HRESULT=0x").Append(comException.ErrorCode.ToString("X8")).Append(')');
-			}
-		}
-		return stringBuilder.ToString();
+		// P2-1:统一走 EvidenceContract(本文件旧版没接 P1-1 码表,收编后自动补齐)
+		return EvidenceContract.DescribeException(ex);
 	}
 }

@@ -125,8 +125,12 @@ internal static class Guardrail
 		}
 		if (risk == InvocationRisk.Destructive && !confirm)
 		{
+			// P3-3 反误导闸门:拒绝消息里带上证据核对规则,让 confirm 不只是"再说一次"
 			return "已拒绝高危操作:成员 " + member.Trim() + " 属于" + Describe(risk)
-				+ "。确认要执行请追加 confirm=true 再调用一次;不确认则不会执行。";
+				+ "。确认要执行请追加 confirm=true 再调用一次;不确认则不会执行。"
+				+ "【闸门】删除前必须核对目标证据:仅 featureHealth=igFeatureFailed(几何未生成的僵尸,Status=1216476311)"
+				+ "可删;igFeatureWarned/Suppressed/RolledBack 一律保留,未知状态码原样上报交人工确认;"
+				+ "证据须为 COM 直读(confidence=observed),inferred/读失败的不作为删除依据。";
 		}
 		return null;
 	}

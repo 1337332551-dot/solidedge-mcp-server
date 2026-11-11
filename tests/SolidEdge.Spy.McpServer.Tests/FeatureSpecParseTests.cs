@@ -354,6 +354,132 @@ namespace SolidEdge.Spy.McpServer.Tests
             Assert.DoesNotContain("coords", s.UnknownFields);
         }
 
+        // ---------- face 选择器扩展(2026-10-23::outer/:inner 极值 + 点定位) ----------
+
+        [Fact]
+        public void face轴向裸写_行为不变_Axis无Side()
+        {
+            var s = ParseOne("{\"plane\":\"face:+Z\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.Equal("Axis", s.FacePlaneRef.Kind);
+            Assert.Equal("+Z", s.FacePlaneRef.Axis);
+            Assert.Null(s.FacePlaneRef.Side);
+            Assert.Null(s.FacePlaneRef.ParseError);
+        }
+
+        [Fact]
+        public void face极值outer_解析出Side且无ParseError()
+        {
+            var s = ParseOne("{\"plane\":\"face:+Z:outer\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.Equal("Axis", s.FacePlaneRef.Kind);
+            Assert.Equal("+Z", s.FacePlaneRef.Axis);
+            Assert.Equal("outer", s.FacePlaneRef.Side);
+            Assert.Null(s.FacePlaneRef.ParseError);
+        }
+
+        [Fact]
+        public void face极值inner_小写轴大小写混合_Side归一小写()
+        {
+            var s = ParseOne("{\"plane\":\"face:-x:Inner\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.Equal("Axis", s.FacePlaneRef.Kind);
+            Assert.Equal("-X", s.FacePlaneRef.Axis);
+            Assert.Equal("inner", s.FacePlaneRef.Side);
+            Assert.Null(s.FacePlaneRef.ParseError);
+        }
+
+        [Fact]
+        public void face极值大写OUTER_大小写不敏感()
+        {
+            var s = ParseOne("{\"plane\":\"face:+Z:OUTER\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.Equal("outer", s.FacePlaneRef.Side);
+            Assert.Null(s.FacePlaneRef.ParseError);
+        }
+
+        [Fact]
+        public void face极值非法后缀middle_报解析错误()
+        {
+            var s = ParseOne("{\"plane\":\"face:+Z:middle\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.NotNull(s.FacePlaneRef.ParseError);
+            Assert.Null(s.FacePlaneRef.Kind);
+        }
+
+        [Fact]
+        public void face点定位_带轴_解析出Point米制坐标()
+        {
+            var s = ParseOne("{\"plane\":\"face:+Z:@0,0,0.057\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.Equal("Point", s.FacePlaneRef.Kind);
+            Assert.Equal("+Z", s.FacePlaneRef.Axis);
+            Assert.NotNull(s.FacePlaneRef.Point);
+            Assert.Equal(0.0, s.FacePlaneRef.Point[0], 12);
+            Assert.Equal(0.0, s.FacePlaneRef.Point[1], 12);
+            Assert.Equal(0.057, s.FacePlaneRef.Point[2], 12);
+            Assert.Null(s.FacePlaneRef.ParseError);
+        }
+
+        [Fact]
+        public void face点定位_负坐标与小数_可解析()
+        {
+            var s = ParseOne("{\"plane\":\"face:-X:@-0.057,0.02,0\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.Equal("Point", s.FacePlaneRef.Kind);
+            Assert.Equal("-X", s.FacePlaneRef.Axis);
+            Assert.Equal(-0.057, s.FacePlaneRef.Point[0], 12);
+            Assert.Equal(0.02, s.FacePlaneRef.Point[1], 12);
+            Assert.Null(s.FacePlaneRef.ParseError);
+        }
+
+        [Fact]
+        public void face点定位缺轴_报解析错误()
+        {
+            // 2026-10-23 硬要求:点落在棱上时方向不唯一,轴必须写
+            var s = ParseOne("{\"plane\":\"face:@0,0,0.057\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.NotNull(s.FacePlaneRef.ParseError);
+        }
+
+        [Fact]
+        public void face点定位缺一维_报解析错误()
+        {
+            var s = ParseOne("{\"plane\":\"face:+Z:@0,0\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.NotNull(s.FacePlaneRef.ParseError);
+        }
+
+        [Fact]
+        public void face点定位非数字_报解析错误()
+        {
+            var s = ParseOne("{\"plane\":\"face:+Z:@a,b,c\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.NotNull(s.FacePlaneRef.ParseError);
+        }
+
+        [Fact]
+        public void face点定位配coordslocal_语义冲突_报解析错误()
+        {
+            var s = ParseOne("{\"plane\":\"face:+Z:@0,0,0.057\",\"coords\":\"local\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.True(s.CoordsLocal);
+            Assert.NotNull(s.FacePlaneRef.ParseError);
+        }
+
+        [Fact]
+        public void face按ID_新旧语法互不影响()
+        {
+            var s = ParseOne("{\"plane\":\"face:26\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.Equal("Id", s.FacePlaneRef.Kind);
+            Assert.Equal(26, s.FacePlaneRef.FaceId);
+            Assert.Null(s.FacePlaneRef.Side);
+            Assert.Null(s.FacePlaneRef.Point);
+        }
+
+        [Fact]
+        public void face极值后缀为空_报解析错误()
+        {
+            var s = ParseOne("{\"plane\":\"face:+Z:\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.NotNull(s.FacePlaneRef.ParseError);
+        }
+
+        [Fact]
+        public void face三段以上_报解析错误()
+        {
+            var s = ParseOne("{\"plane\":\"face:+Z:outer:extra\",\"rect\":[[0,0],[0.04,0.04]]}");
+            Assert.NotNull(s.FacePlaneRef.ParseError);
+        }
+
         [Fact]
         public void ParseAll_为每个特征赋0based索引()
         {

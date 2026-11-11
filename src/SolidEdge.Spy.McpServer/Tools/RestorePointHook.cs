@@ -106,6 +106,11 @@ internal sealed class RestorePointHook
 			{
 				return; // Read/Session/未登记档不改模型内容
 			}
+			if (IsDryRunToolCall(toolParams))
+			{
+				Audit(tool, null, "-", "rp skip: dryRun=true 静态校验不改模型,不打还原点");
+				return;
+			}
 
 			string docName;
 			string docPath;
@@ -221,6 +226,35 @@ internal sealed class RestorePointHook
 			return el.GetString();
 		}
 		return null;
+	}
+
+	/// <summary>
+	/// tools/call 参数里的 dryRun 标记(纯静态校验,不改模型)。兼容两种形态:
+	/// 标准 MCP 的 params.arguments.dryRun 与平铺的 params.dryRun。
+	/// </summary>
+	internal static bool IsDryRunToolCall(JsonElement toolParams)
+	{
+		return TryGetBool(toolParams, "arguments", "dryRun");
+	}
+
+	private static bool TryGetBool(JsonElement obj, string container, string name)
+	{
+		if (obj.ValueKind != JsonValueKind.Object)
+		{
+			return false;
+		}
+		if (obj.TryGetProperty(container, out JsonElement c) && c.ValueKind == JsonValueKind.Object
+			&& c.TryGetProperty(name, out JsonElement v)
+			&& (v.ValueKind == JsonValueKind.True || v.ValueKind == JsonValueKind.False))
+		{
+			return v.GetBoolean();
+		}
+		if (obj.TryGetProperty(name, out JsonElement v2)
+			&& (v2.ValueKind == JsonValueKind.True || v2.ValueKind == JsonValueKind.False))
+		{
+			return v2.GetBoolean();
+		}
+		return false;
 	}
 
 	// ---------------- 目录指纹与仓库路径 ----------------

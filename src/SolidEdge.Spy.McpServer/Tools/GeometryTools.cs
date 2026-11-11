@@ -115,10 +115,13 @@ public static class GeometryTools
 
 	private static double[] CamArgs;
 
-	private const int SW_RESTORE = 9;
+	private const int SW_RESTORE = 9; // P3-2a 探针窗口还原码;ShowWindow 处用字面量 9,与字面量保持同义(审计留名)
 
 	[McpServerTool]
-	[Description("读取模型中对象的定位信息，解决'坐标系心智负担'。返回包围盒/形心/尺寸(mm)/面法向与位置。target 传 obj-N 句柄（特征/Model/RefPlane），或 'refplanes'（扫全部参考面并反推精确法向）/'model'（整个模型）。平面法向用通用梯度法（Profile.Convert3DCoordinate 把世界三轴投影到面上，投影长度≈0 的轴即法向），支持斜平面。坐标单位=米。")]
+	[Description("读取对象的定位信息(包围盒/形心/尺寸 mm/面法向与位置),解决'坐标系心智负担'。" +
+		"target 传 obj-N(特征/Model/RefPlane),或 'refplanes'(扫全部参考面并反推精确法向)/'model'。" +
+		"平面法向用通用梯度法(把世界三轴投影到面上,投影长度≈0 的轴即法向),支持斜平面。坐标单位米。" +
+		"confidence:observed=rangeBox 由 Body.GetRange 直读;inferred=读不到(原因见 rangeBoxReason,不猜);sizeMm/centroid 由 rangeBox 换算。")]
 	public static string se_read_geometry(SolidEdgeContext context, [Description("要读定位的对象：obj-N 句柄 / 'refplanes' / 'model'")] string target)
 	{
 		try
@@ -196,13 +199,17 @@ public static class GeometryTools
 		List<object> list = new List<object>();
 		for (int i = 1; i <= num; i++)
 		{
-			double[] array = TryRangeBox(Get(obj2, "Item", i));
+			double[] array = TryRangeBox(Get(obj2, "Item", i), out var rangeReason);
 			list.Add(new
 			{
 				index = i,
 				rangeBox = array,
+				// P3-1:observed=Body.GetRange 直读;inferred=读不到(值不可用,原因见 rangeBoxReason,不猜)
+				confidence = ((array != null) ? EvidenceContract.Observed : EvidenceContract.Inferred),
 				sizeMm = ((array != null) ? Mm(array) : null),
-				centroid = ((array != null) ? Centroid(array) : null)
+				centroid = ((array != null) ? Centroid(array) : null),
+				derivedFrom = ((array != null) ? "rangeBox" : null),
+				rangeBoxReason = ((array == null) ? rangeReason : null)
 			});
 		}
 		return JsonSerializer.Serialize(new
@@ -216,27 +223,46 @@ public static class GeometryTools
 
 	private static string ReadObject(SolidEdgeContext context, object obj, string typeName)
 	{
-		double[] array = TryRangeBox(obj);
+		double[] array = TryRangeBox(obj, out var rangeReason);
 		int faceCount = -1;
+		string faceCountReason = null;
 		try
 		{
 			object obj2 = Get(obj, "Faces", 1);
-			if (obj2 != null)
+			if (obj2 == null)
 			{
-				faceCount = Count(obj2);
+				faceCountReason = "Faces 读不到(可能无实体几何)";
+			}
+			else
+			{
+				try
+				{
+					faceCount = Convert.ToInt32(Get(obj2, "Count"));
+				}
+				catch (Exception ex)
+				{
+					// P3-2b:Count 读不到保持 -1 并说明,不再借道 Count() 假 0
+					faceCountReason = "Faces.Count 读不到: " + ex.Message;
+				}
 			}
 		}
-		catch
+		catch (Exception ex2)
 		{
+			faceCountReason = "Faces 读取失败: " + ex2.Message;
 		}
 		return JsonSerializer.Serialize(new
 		{
 			status = "ok",
 			target = typeName,
 			rangeBox = array,
+			// P3-1:observed=Body.GetRange 直读;inferred=读不到(值不可用,原因见 rangeBoxReason,不猜)
+			confidence = ((array != null) ? EvidenceContract.Observed : EvidenceContract.Inferred),
 			sizeMm = ((array != null) ? Mm(array) : null),
 			centroid = ((array != null) ? Centroid(array) : null),
+			derivedFrom = ((array != null) ? "rangeBox" : null),
+			rangeBoxReason = ((array == null) ? rangeReason : null),
 			faceCount = faceCount,
+			faceCountReason = ((faceCount < 0) ? faceCountReason : null),
 			note = "坐标单位=米;sizeMm 换算成 UI 显示的毫米。"
 		});
 	}
@@ -418,12 +444,18 @@ public static class GeometryTools
 	}
 
 	[McpServerTool]
-	[Description("把 Solid Edge 当前活动视口截图并【以图片内容直接返回】给多模态 AI 查看(无需 read_file)。orientation 可选 current(默认,不动视角)/iso/top/front/back/left/right/bottom;默认 Fit 满幅,动了视角/缩放后自动还原原相机。支持 3D 文档与工程图 DFT(DFT 走 SheetWindow.Fit+SaveAsImage 路线,orientation/zoom 被忽略,不还原视角)。图片同时落盘到自管理目录(%TEMP%\\se_mcp_captures,LRU 只保留最近50张/100MB,与上一张画面相同则不重复落盘),元数据里给出路径。注意:截图时 SE 主窗口会短暂跳到前台约2秒(不改变最大化状态)。典型用法:建模/改参数后调用本工具目检结果。")]
-	public static List<AIContent> se_capture_viewport(SolidEdgeContext context, [Description("视角:current(默认)/iso/top/front/back/left/right/bottom")] string orientation = "current", [Description("截图前是否 Fit 满幅(默认 true)")] bool fit = true, [Description("Fit 后再 ZoomCamera 的倍率(可选,1 或不传=不缩放)")] double? zoom = null, [Description("落盘原图宽(像素,默认1600)")] int width = 1600, [Description("落盘原图高(像素,默认1200)")] int height = 1200, 	[Description("截图后是否还原原视角(默认 true)")] bool restoreCamera = true, [Description("可选:裁剪区域 \"x,y,w,h\"(0~1 比例,相对整幅;如 \"0.3,0.3,0.4,0.4\" 取中央 40%)。用于放大看局部(某个视图/某个孔位/某段文字),裁剪后就地覆盖落盘图并改写元数据里的宽高")] string region = null)
+	[Description("把当前活动视口截图并【以图片内容直接返回】给多模态 AI 查看(无需 read_file)。" +
+		"orientation:current(默认)/iso/top/front/back/left/right/bottom;默认 Fit 满幅,动过视角/缩放后自动还原原相机。" +
+		"支持 3D 与工程图 DFT(DFT 走 SheetWindow.Fit+SaveAsImage,orientation/zoom 忽略,不还原视角)。" +
+		"内嵌图默认 small 档(≤40KB JPEG 小图,省 token);要大图传 inline=\"full\"(≤1500px PNG,大 token 消耗)——" +
+		"两档都落盘原图并在元数据给路径,看清局部优先用 region 裁剪而不是 full。" +
+		"图片落盘到 %TEMP%\\se_mcp_captures(可用 SE_MCP_CAPTURE_DIR 覆盖;LRU 保留最近 50 张/100MB),元数据给路径。" +
+		"注意:截图时 SE 主窗口会短暂跳前台约 2 秒。典型用法:建模/改参数后目检结果。")]
+	public static List<AIContent> se_capture_viewport(SolidEdgeContext context, [Description("视角:current(默认)/iso/top/front/back/left/right/bottom")] string orientation = "current", [Description("截图前是否 Fit 满幅(默认 true)")] bool fit = true, [Description("Fit 后再 ZoomCamera 的倍率(可选,1 或不传=不缩放)")] double? zoom = null, [Description("落盘原图宽(像素,默认1600;仅 DFT 工程图路线生效,3D 文档按实际窗口尺寸落盘)")] int width = 1600, [Description("落盘原图高(像素,默认1200;仅 DFT 工程图路线生效,3D 文档按实际窗口尺寸落盘)")] int height = 1200, 	[Description("截图后是否还原原视角(默认 true)")] bool restoreCamera = true, [Description("可选:裁剪区域 \"x,y,w,h\"(0~1 比例,相对整幅;如 \"0.3,0.3,0.4,0.4\" 取中央 40%)。用于放大看局部(某个视图/某个孔位/某段文字),裁剪后就地覆盖落盘图并改写元数据里的宽高")] string region = null, [Description("内嵌图档位:small(默认,≤40KB JPEG)/full(≤1500px PNG,大 token);大图看落盘路径即可")] string inline = "small")
 	{
 		try
 		{
-			return context.Invoke(() => CaptureViewport(context, orientation, fit, zoom, width, height, restoreCamera, inlineImage: true, null, region));
+			return context.Invoke(() => CaptureViewport(context, orientation, fit, zoom, width, height, restoreCamera, inlineImage: true, null, region, inline));
 		}
 		catch (Exception ex)
 		{
@@ -444,7 +476,7 @@ public static class GeometryTools
 		}
 	}
 
-	private static List<AIContent> CaptureViewport(SolidEdgeContext context, string orientation, bool fit, double? zoom, int width, int height, bool restoreCamera, bool inlineImage, string explicitPath, string region)
+	private static List<AIContent> CaptureViewport(SolidEdgeContext context, string orientation, bool fit, double? zoom, int width, int height, bool restoreCamera, bool inlineImage, string explicitPath, string region, string inlineMode = "small")
 	{
 		//IL_001e: Unknown result type (might be due to invalid IL or missing references)
 		//IL_0028: Expected O, but got Unknown
@@ -471,17 +503,43 @@ public static class GeometryTools
 				captureMeta.Note = ((captureMeta.Note == null) ? "" : captureMeta.Note + "; ") + "region 裁剪失败(已返回原图): " + cropError;
 			}
 		}
-		List<AIContent> list = new List<AIContent> { (AIContent)new TextContent(captureMeta.ToJson()) };
-		if (captureMeta.Ok & inlineImage)
+		// 内嵌图先算(2026-11-10 small 档):字节要在 JSON 元数据序列化【前】算好,实际大小/档位才能如实进 Note
+		byte[] inlineBytes = null;
+		string inlineMime = "image/png";
+		string inlineError = null;
+		if (captureMeta.Ok && inlineImage)
 		{
 			try
 			{
-				byte[] array = CaptureStore.DownscaleToPngBytes(captureMeta.ImagePath, 1500);
-				list.Add((AIContent)new DataContent((ReadOnlyMemory<byte>)array, "image/png"));
+				if (inlineMode == "full")
+				{
+					inlineBytes = CaptureStore.DownscaleToPngBytes(captureMeta.ImagePath, CaptureStore.InlineMaxEdge);
+					inlineMime = "image/png";
+				}
+				else
+				{
+					inlineBytes = CaptureStore.DownscaleToJpegBytes(captureMeta.ImagePath, CaptureStore.InlineJpegMaxEdge, CaptureStore.InlineJpegMaxBytes);
+					inlineMime = "image/jpeg";
+					captureMeta.Note = ((captureMeta.Note == null) ? "" : captureMeta.Note + "; ") +
+						"内嵌小图 JPEG " + ((inlineBytes == null) ? 0 : inlineBytes.Length) + "B(small 档,≤40KB;原图见 ImagePath)";
+				}
 			}
 			catch (Exception ex)
 			{
-				list.Add((AIContent)new TextContent("(内嵌图片生成失败:" + ex.Message + ";可用 read_file 读 " + captureMeta.ImagePath + ")"));
+				inlineBytes = null; // 生成失败走下方兜底提示,不吞掉截图本身
+				inlineError = ex.Message;
+			}
+		}
+		List<AIContent> list = new List<AIContent> { (AIContent)new TextContent(captureMeta.ToJson()) };
+		if (captureMeta.Ok && inlineImage)
+		{
+			if (inlineBytes != null)
+			{
+				list.Add((AIContent)new DataContent((ReadOnlyMemory<byte>)inlineBytes, inlineMime));
+			}
+			else
+			{
+				list.Add((AIContent)new TextContent("(内嵌图片生成失败:" + inlineError + ";可用 read_file 读 " + captureMeta.ImagePath + ")"));
 			}
 		}
 		return list;
@@ -1190,28 +1248,41 @@ public static class GeometryTools
 	///   var body = (SolidEdgeGeometry.Body)host.Body; body.GetRange(ref min, ref max);
 	/// 入参可能是 Model / 特征 / 其它拓扑对象 → 先试自身(自身有 Body),再试 Parent。
 	/// </summary>
-	private static double[] TryRangeBox(object obj)
+	private static double[] TryRangeBox(object obj, out string reason)
 	{
-		double[] num = TryBodyRange(obj);
+		double[] num = TryBodyRange(obj, out var selfReason);
 		if (num != null)
 		{
+			reason = null;
 			return num;
 		}
+		object parent;
 		try
 		{
-			return TryBodyRange(Get(obj, "Parent"));
+			parent = Get(obj, "Parent");
 		}
-		catch
+		catch (Exception ex)
 		{
+			reason = "Parent 读不到: " + ex.Message + "(自身: " + selfReason + ")";
 			return null;
 		}
+		if (parent == null)
+		{
+			reason = selfReason;
+			return null;
+		}
+		double[] num2 = TryBodyRange(parent, out var parentReason);
+		reason = ((num2 == null) ? ("自身: " + selfReason + "; Parent: " + parentReason) : null);
+		return num2;
 	}
 
-	/// <summary>宿主对象的实体包围盒,走官方 Body.GetRange;读不到返回 null。</summary>
-	private static double[] TryBodyRange(object host)
+	/// <summary>宿主对象的实体包围盒,走官方 Body.GetRange;读不到返回 null 并经 reason 说明原因(P3-2b)。</summary>
+	private static double[] TryBodyRange(object host, out string reason)
 	{
+		reason = null;
 		if (host == null)
 		{
+			reason = "宿主对象为 null";
 			return null;
 		}
 		try
@@ -1219,6 +1290,7 @@ public static class GeometryTools
 			object obj = Get(host, "Body");
 			if (obj == null)
 			{
+				reason = "Body 读不到(可能无实体几何,或对象不是实体宿主)";
 				return null;
 			}
 			SolidEdgeGeometry.Body body = (SolidEdgeGeometry.Body)obj;
@@ -1237,9 +1309,11 @@ public static class GeometryTools
 					Convert.ToDouble(max.GetValue(2))
 				};
 			}
+			reason = "Body.GetRange 返回数据不完整";
 		}
-		catch
+		catch (Exception ex)
 		{
+			reason = "Body.GetRange 失败: " + ex.Message;
 		}
 		return null;
 	}
@@ -1283,24 +1357,8 @@ public static class GeometryTools
 
 	private static string DescribeException(Exception ex)
 	{
-		StringBuilder stringBuilder = new StringBuilder();
-		Exception ex2 = ex;
-		int num = 0;
-		while (ex2 != null && num < 3)
-		{
-			if (num > 0)
-			{
-				stringBuilder.Append(" <- 内部: ");
-			}
-			stringBuilder.Append(ex2.GetType().Name);
-			if (!string.IsNullOrEmpty(ex2.Message))
-			{
-				stringBuilder.Append(": ").Append(ex2.Message);
-			}
-			ex2 = ex2.InnerException;
-			num++;
-		}
-		return stringBuilder.ToString();
+		// P2-1:统一走 EvidenceContract(本文件旧版没接 P1-1 码表,收编后自动补齐)
+		return EvidenceContract.DescribeException(ex);
 	}
 
 	private static string Error(string message)

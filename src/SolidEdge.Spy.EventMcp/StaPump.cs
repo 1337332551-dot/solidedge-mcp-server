@@ -56,7 +56,7 @@ namespace SolidEdge.Spy.EventMcp
         private IntPtr _hwnd;
         private uint _threadId;
         private int _started;
-        private int _stopping;
+        private int _stopping; // 2026-10-25 审计:write-only(Stop 写入,泵循环靠 WM_QUIT 退出,无读点),判死待删
         private int _startFailed;
 
         /// <summary>启动泵线程并等待 message-only 窗口就绪。</summary>
@@ -121,6 +121,19 @@ namespace SolidEdge.Spy.EventMcp
             {
                 PostMessage(_hwnd, WM_RESCAN, IntPtr.Zero, IntPtr.Zero);
             }
+        }
+
+        /// <summary>
+        /// 投递一段 COM 操作到泵线程,立即返回、不等结果(投递即忘)。
+        /// 与 Invoke 的区别:不创建 TaskCompletionSource,不阻塞调用方,不回传结果/异常。
+        /// 用途:sink 回调里延迟做 COM(回调铁律:零 COM 零阻塞),如命令名反解+台账落盘。
+        /// 顺序保证:PostMessage FIFO,多次 Post 按提交顺序在泵线程执行。
+        /// </summary>
+        public void Post(Action action)
+        {
+            if (action == null || _hwnd == IntPtr.Zero) return;
+            _queue.Enqueue(new WorkItem { Fn = () => { action(); return null; }, Tcs = null });
+            PostMessage(_hwnd, WM_INVOKE, IntPtr.Zero, IntPtr.Zero);
         }
 
         /// <summary>停止泵线程(投递 WM_QUIT 并等待退出)。</summary>
@@ -224,8 +237,16 @@ namespace SolidEdge.Spy.EventMcp
             WorkItem item;
             while (_queue.TryDequeue(out item))
             {
-                try { item.Tcs.SetResult(item.Fn()); }
-                catch (Exception ex) { item.Tcs.SetException(ex); }
+                try
+                {
+                    object result = item.Fn();
+                    if (item.Tcs != null) item.Tcs.SetResult(result);
+                }
+                catch (Exception ex)
+                {
+                    // Invoke 的项要回传异常;Post(投递即忘)的项没有等待者,吞掉避免拖垮泵线程
+                    if (item.Tcs != null) item.Tcs.SetException(ex);
+                }
             }
         }
 

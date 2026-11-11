@@ -57,6 +57,41 @@ namespace SolidEdge.Spy.McpServer.Tests
             Assert.True(Has(r, "E203"));
         }
 
+        // ---------- face 选择器扩展(2026-10-23):±A:outer|inner 与 ±A:@x,y,z ----------
+
+        [Theory]
+        [InlineData("face:+Z:outer")]
+        [InlineData("face:-X:inner")]
+        [InlineData("face:+Z:@0,0,0.057")]
+        public void face扩展选择器_格式合法_无E203(string plane)
+        {
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"" + plane + "\",\"depth\":0.005,\"rect\":[[0,0],[0.04,0.04]]}]");
+            Assert.False(Has(r, "E203"));
+            Assert.Equal("ok", r.status);
+        }
+
+        [Theory]
+        [InlineData("face:@0,0,0.057")]     // 缺轴:点落在棱上方向不唯一
+        [InlineData("face:+Z:middle")]      // 后缀非法
+        [InlineData("face:+Z:@0,0")]        // 缺一维
+        [InlineData("face:+Z:@a,b,c")]      // 非数字
+        public void face扩展选择器_格式非法_E203(string plane)
+        {
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"" + plane + "\",\"depth\":0.005,\"rect\":[[0,0],[0.04,0.04]]}]");
+            Assert.True(Has(r, "E203"));
+            Assert.Equal("error", r.status);
+        }
+
+        [Fact]
+        public void face点定位配coordslocal_E203报error()
+        {
+            // 点是世界坐标,local 要面局部 u/v —— 冲突显式拦,不静默取一种
+            var r = V("[{\"op\":\"extrude\",\"plane\":\"face:+Z:@0,0,0.057\",\"coords\":\"local\"," +
+                      "\"depth\":0.005,\"rect\":[[0,0],[0.04,0.04]]}]");
+            Assert.True(Has(r, "E203"));
+            Assert.Equal("error", r.status);
+        }
+
         // ---------- sweep 路径 trace(线段+真圆弧,2026-10-04) ----------
 
         [Fact]
@@ -636,6 +671,29 @@ namespace SolidEdge.Spy.McpServer.Tests
             var r2 = V("[{\"op\":\"extrude\",\"plane\":\"RefPlane_1\",\"depth\":0.05,\"rect\":[[0,0],[0.04,0.04]],\"expectvolumedelta\":[-1200,-1300]}]");
             Assert.False(Has(r1, "E418"));
             Assert.False(Has(r2, "E418"));
+        }
+
+        [Fact]
+        public void replaceOf_支持的op_不报W433()
+        {
+            // 核心 7 op 支持 replaceOf 重建删除(2026-11-06 修复):revolve 声明 replaceOf 合法
+            var r = V("[{\"op\":\"revolve\",\"plane\":\"RefPlane_3\",\"polygon\":[[0.05,0],[0.11,0],[0.11,0.02],[0.05,0.02]],\"axis\":[[0,0],[0,0.03]],\"replaceOf\":\"flange_body\"}]");
+            Assert.False(Has(r, "W433"));
+        }
+
+        [Fact]
+        public void replaceOf_不支持的op_报W433()
+        {
+            // loft/sweep/helix/fillet 等不支持 replaceOf:执行期一律忽略,静态层必须提前说(2026-11-05 法兰重建踩坑)
+            var r = V("[{\"op\":\"helix\",\"plane\":\"RefPlane_1\",\"circle\":{\"center\":[0,0],\"radius\":0.005},\"pitch\":0.01,\"height\":0.03,\"axis\":[[0,0],[0,0.03]],\"replaceOf\":\"old_helix\"}]");
+            Assert.True(Has(r, "W433"));
+        }
+
+        [Fact]
+        public void replaceOf_未声明_不报W433()
+        {
+            var r = V("[{\"op\":\"loft\",\"profiles\":[{\"plane\":\"RefPlane_1\",\"circle\":{\"center\":[0,0],\"radius\":0.01}},{\"plane\":\"@p\",\"circle\":{\"center\":[0,0],\"radius\":0.02}}]}]");
+            Assert.False(Has(r, "W433"));
         }
     }
 }

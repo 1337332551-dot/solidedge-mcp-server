@@ -18,7 +18,7 @@ namespace SolidEdge.Spy.EventMcp.Tools
     [McpServerToolType]
     public static class EventTools
     {
-        [McpServerTool, Description("增量读取 Solid Edge 事件(本 server 常驻订阅 5 类事件源:应用级/文档级/零件重算/装配重算/文件UI)。返回 seq 大于入参 seq 的事件;首次调用传 seq=0 取最近事件,之后把返回的 latestSeq 作为下次入参增量轮询。典型用法:①用执行 MCP(solidedge)的 se_invoke_member 改参数/建特征后,轮询本工具等待 AfterRecompute(重算完成)或 AfterSave(保存完成)确认信号;②等待用户双击视图进入/退出编辑环境:轮询等 ISEApplicationEvents.AfterEnvironmentActivate(进入)或 BeforeEnvironmentDeactivate(退出),收到后用 solidedge 的 se_get_document 查 environment 字段确认具体环境名(如 DrawingViewEdit=视图编辑、Detail=图页)。返回的 lost>0 表示事件太多被环形缓冲覆盖,需加大轮询频率或用 se_set_event_filter 关闭噪声源。")]
+        [McpServerTool, Description("增量读取 Solid Edge 事件(本 server 常驻订阅 4 类事件源:应用级/文档级/零件重算/装配重算;文件UI 接口因 Advise 会吞另存为/打开对话框,自 2026-09-22 起不订阅)。返回 seq 大于入参 seq 的事件;首次调用传 seq=0 取最近事件,之后把返回的 latestSeq 作为下次入参增量轮询。典型用法:①用执行 MCP(solidedge)的 se_invoke_member 改参数/建特征后,轮询本工具等待 AfterRecompute(重算完成)或 AfterSave(保存完成)确认信号;②等待用户双击视图进入/退出编辑环境:轮询等 ISEApplicationEvents.AfterEnvironmentActivate(进入)或 BeforeEnvironmentDeactivate(退出),收到后用 solidedge 的 se_get_document 查 environment 字段确认具体环境名(如 DrawingViewEdit=视图编辑、Detail=图页)。返回的 lost>0 表示事件太多被环形缓冲覆盖,需加大轮询频率或用 se_set_event_filter 关闭噪声源。")]
         public static string se_get_events(
             EventHub hub,
             [Description("游标:上次返回的 latestSeq;首次调用传 0")] int seq,

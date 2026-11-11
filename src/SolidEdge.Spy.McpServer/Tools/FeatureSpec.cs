@@ -106,6 +106,19 @@ namespace SolidEdge.Spy.McpServer.Tools
         public string Mode;
 
         /// <summary>
+        /// 2026-10-23 hole:螺纹规格(如 "M10" / "M10x1.25" / "Rp1/2"),null=光孔。
+        /// 给这个字段时,实际孔径由 <see cref="HoleThreadTable"/> 按规格自动带出(底孔/小径/螺距),
+        /// 不需要再写 diameter。
+        /// </summary>
+        public string Thread;
+
+        /// <summary>孔标准(数据库文件名),如 "GB Metric";null=用 HoleThreadTable.DefaultStandard。</summary>
+        public string Standard;
+
+        /// <summary>螺纹选项(minor 默认=内螺纹小径 / tapdrill=丝锥直径 / nominal=标称直径),null=minor。</summary>
+        public string ThreadOption;
+
+        /// <summary>
         /// 旋转轴(revolve 专用)两点:[[u1,v1],[u2,v2]] 或 [u1,v1,u2,v2]。
         /// 局部 u/v 坐标(米)。轴是【独立于截面】的构造线,不参与截面闭环约束。
         /// </summary>
@@ -124,17 +137,73 @@ namespace SolidEdge.Spy.McpServer.Tools
         /// <summary>是否提供了有效的 edges 数组(至少 1 条可解析)。</summary>
         public bool HasEdges;
 
+        /// <summary>
+        /// bluesurf 专用(2026-11-09):edgeOf 特征引用(@别名 / obj-K 句柄),声明边所属的体。
+        /// </summary>
+        public string EdgeOf;
+
+        /// <summary>edgeOf 解析失败原因(非字符串等);null = 可用。</summary>
+        public string EdgeOfError;
+
+        /// <summary>
+        /// bluesurf 专用(2026-11-09):实体边序号(edges 数组元素为整数时的通道,1-based Model.Body.Edges)。
+        /// 与 fillet/chamfer 的 Edges(对象数组)共用 "edges" 字段,按元素类型分流。
+        /// </summary>
+        public List<int> EdgeIndices = new List<int>();
+
+        /// <summary>edges 数组里是否含整数元素(bluesurf 通道)。</summary>
+        public bool HasEdgeIndices;
+
         /// <summary>筋板厚度(rib 专用,米)。null = 未给。</summary>
         public double? Thickness;
 
         /// <summary>被阵列的特征名(pattern 专用):本批之前特征的 name、SE 特征名或 obj-K 句柄。</summary>
         public string Of;
 
-        /// <summary>X/Y 方向阵列个数(pattern 专用)。null = 未给。</summary>
+        /// <summary>X/Y 方向阵列个数(矩形阵列,2026-11-08 开放:kind:"rect" 走 RectangularPatterns2d.Add 链路;>=1)。</summary>
         public int? XCount, YCount;
 
-        /// <summary>X/Y 方向阵列间距(pattern 专用,米)。null = 未给。</summary>
+        /// <summary>X/Y 方向阵列间距(矩形阵列,米)。</summary>
         public double? XSpacing, YSpacing;
+
+        // ---- pattern 圆周阵列(2026-10-23 开放;链路 CircularPatterns2d.AddByCircle + Patterns.Add) ----
+
+        /// <summary>阵列种类;"circular"(默认,圆周)| "rect"(矩形,2026-11-08 开放)。</summary>
+        public string Kind;
+
+        /// <summary>圆周实例总数(含输入特征,即 CircularPattern2d.Count);必须 >= 2。</summary>
+        public int? PatCount;
+
+        /// <summary>spacing 字段原始值(null=未给)。"fit" = 整圈均布(默认);解析后的数值放 SpacingDeg。</summary>
+        public string Spacing;
+
+        /// <summary>true = spacing 给了且为 "fit"(或未给,默认 fit 整圈均布 360/count)。</summary>
+        public bool SpacingFit = true;
+
+        /// <summary>固定角间距(度,spacingDeg 字段);与 fit 模式互斥。CircularPattern2d.AngularSpacing 按它设置。</summary>
+        public double? SpacingDeg;
+
+        /// <summary>spacing 字段解析失败原因(如给了数字——单位歧义,要求改用 spacingDeg);null=无问题。</summary>
+        public string SpacingParseError;
+
+        /// <summary>排列方向;false=逆时针(默认),true=顺时针。</summary>
+        public bool? Clockwise;
+
+        /// <summary>阵列类型:"smart"(默认,关联特征)/"fast"(轻量实例,原件 Pattern_1 即 fast)。</summary>
+        public string PatternType;
+
+        // ---- pattern 矩形阵列(2026-11-08 开放;链路 RectangularPatterns2d.Add + Patterns.Add,规格见 reports/op-design_rect-pattern_20261108.md) ----
+
+        /// <summary>
+        /// 矩形阵列单项抑制(kind:"rect"):1-based occurrence 序号数组,列主序(X 先递增 Y),
+        /// col=(k-1)/ycount 整除、row=(k-1)%ycount。语义(2026-11-08 实测):置 true 后 NumberOfOccurrences
+        /// 不变(定义数),Recompute 后该实例几何消失;置 false 完全可逆(面 ID 复原)。
+        /// </summary>
+        public List<int> Suppress;
+
+        /// <summary>suppress 数组解析失败原因(非整数项/非数组);null = 可用。</summary>
+        public string SuppressParseError;
+
 
         /// <summary>是否提供了有效旋转轴(写了且两点不退化)。</summary>
         public bool HasAxis;
@@ -145,6 +214,31 @@ namespace SolidEdge.Spy.McpServer.Tools
         /// 孔径(hole 便捷写法,米)。给了且无 circle/circles 时合成单圆轮廓(radius = diameter/2)。
         /// </summary>
         public double? Diameter;
+
+        /// <summary>
+        /// 螺栓分布圆直径(hole 标准定位,米,2026-10-24):给了它就走"构造圆+PointOn+角度"标准画法——
+        /// 孔位由 分布圆Ø + angleDeg 完全定位(不再吃 center/circles 坐标),草图可全约束。
+        /// </summary>
+        public double? BoltDia;
+
+        /// <summary>孔位起始角(度,配 boltdia;缺省 0 = +X 方向)。跨中心线两侧就给 360/count/2。</summary>
+        public double? StartAngleDeg;
+
+        /// <summary>
+        /// 极坐标孔(polarhole,2026-10-25)角度列表(度):每个角度建一个独立 Hole 特征,
+        /// 定位草图全约束(构造线+连接+长度/角度驱动尺寸)。与 angleDeg 二选一,angles 优先。
+        /// </summary>
+        public List<double> AnglesDeg;
+
+        /// <summary>angles 数组解析失败原因;null = 可用。</summary>
+        public string AnglesParseError;
+
+        /// <summary>
+        /// 替换语义(2026-10-24):重建前按名删除这些旧特征(逗号分隔)——hole/pattern 通用。
+        /// 改 boltdia/angleDeg 等参数重跑时,写 replaceOf:"旧阵列名,旧孔名"(Pattern 必须先于其种子)
+        /// 即可实现"改变量→一键重建"。找不到的名字跳过并记 warning。
+        /// </summary>
+        public string ReplaceOf;
 
         /// <summary>孔中心(hole 便捷写法,目标平面局部 u/v,米)。与 diameter 配套,缺省 [0,0]。</summary>
         public double[] Center;
@@ -168,6 +262,55 @@ namespace SolidEdge.Spy.McpServer.Tools
 
         /// <summary>profiles 字段存在但不是数组/为空时的错误信息;null=无问题。</summary>
         public string ProfilesError;
+
+        /// <summary>
+        /// guides 数组(loft_surface 专用,2026-10-31 真机验证):导线,每项是 {plane, "spline":[[u,v],...]} 的迷你特征。
+        /// ★ 导线必须是【开放样条轮廓】(不是 3D 草图折线):实测拿 3D 草图 Lines3D 的折线边当导线,
+        ///   特征能建但 faces=0(几何没生成);换成 2D 样条 Profile 后同一组截面 z 范围从 20 拉到 28.36mm,确认导线生效。
+        /// </summary>
+        public List<FeatureSpec> Guides = new List<FeatureSpec>();
+
+        /// <summary>是否提供了 guides 数组。</summary>
+        public bool HasGuides;
+
+        /// <summary>guides 字段格式错误信息;null=无问题。</summary>
+        public string GuidesError;
+
+        /// <summary>
+        /// 开口截面开关(loft_surface 专用,2026-11-02):true 时允许截面是【开口】样条(closed:false)。
+        /// 为什么需要:底层 LoftedSurfaces.Add(WantEndCaps=false)本来就支持开口截面出开放壳,
+        /// 之前只有闭合轮廓能过,是 op 自己的限制;开口壳是做外壳件/鼠标壳这类"半开口"曲面的唯一路子。
+        /// </summary>
+        public bool OpenProfile;
+
+        // ---- 3D 曲线 op(2026-11-02):spline3d / arc3d ----
+
+        /// <summary>spline3d 的过点(世界坐标 XYZ,米)。</summary>
+        public List<double[]> Points3D = new List<double[]>();
+
+        /// <summary>points 数组是否至少解析出 1 个点(格式错在 Points3DError)。</summary>
+        public bool HasPoints3D;
+
+        /// <summary>points 字段的格式错误(不是数组/元素不是 [x,y,z]/少于 2 点);null=无问题。</summary>
+        public string Points3DError;
+
+        /// <summary>spline3d 是否闭合(closed,默认 false;闭合时末点不必重复首点)。</summary>
+        public bool Spline3DClosed;
+
+        /// <summary>arc3d:起点(世界坐标,米)。</summary>
+        public double[] Start3D;
+
+        /// <summary>arc3d:终点(世界坐标,米)。</summary>
+        public double[] End3D;
+
+        /// <summary>arc3d:圆心(世界坐标,米)。</summary>
+        public double[] Center3D;
+
+        /// <summary>arc3d:法向(可选,省略时按 start/end/center 求平面法向)。</summary>
+        public double[] Normal3D;
+
+        /// <summary>arc3d 字段的格式错误(缺 start/end/center 或某个不是 3 维点);null=无问题。</summary>
+        public string Arc3DError;
 
         /// <summary>
         /// 显式截面锚点(局部 u/v,米):loft/sweep 的 Origins 用。
@@ -259,6 +402,22 @@ namespace SolidEdge.Spy.McpServer.Tools
         /// <summary>腰孔长轴相对局部 u 轴的转角(弧度),默认 0。</summary>
         public double SlotAngle;
 
+        /// <summary>
+        /// 是否为有效样条轮廓(2026-10-31 新增)。用【真 B 样条】而不是折线近似:
+        /// 折线逼近会在曲面上留一圈折棱,而且折线壳做 thicken 会偏置超量(实测 1.2mm 壁厚、包围盒大出 6~7mm);
+        /// 样条截面出来的曲面是光滑的,加厚才稳。
+        /// </summary>
+        public bool HasSpline;
+
+        /// <summary>样条过点(局部 u/v,米),至少 3 个点。</summary>
+        public double[][] SplinePoints;
+
+        /// <summary>样条阶数(2~5),默认 3;要求 点数 >= 阶数。</summary>
+        public int SplineOrder = 3;
+
+        /// <summary>是否闭合(闭合时不必重复首点,SE 自动接回)。</summary>
+        public bool SplineClosed;
+
         /// <summary>形状来源:circle / loops / rect / polygon / ""(都没有)。</summary>
         public string ShapeSource = "";
 
@@ -329,25 +488,36 @@ namespace SolidEdge.Spy.McpServer.Tools
 
     /// <summary>
     /// plane 字段的"面锚定"声明(2026-10-03 IR 面平面:extrude / cut / hole)。
-    /// 两种写法:
-    ///   "face:26"  → Kind=Id,   FaceId=26      (按 Face.ID 直接定位)
-    ///   "face:+Z"  → Kind=Axis, Axis="+Z"      (±X/±Y/±Z 轴向选择器)
+    /// 四种写法(2026-10-23 扩 :outer/:inner 与点定位):
+    ///   "face:26"           → Kind=Id,    FaceId=26             (按 Face.ID 直接定位)
+    ///   "face:+Z"           → Kind=Axis,  Axis="+Z"             (轴向选择器;同向多面仍报错,与旧版一致)
+    ///   "face:+Z:outer"     → Kind=Axis,  Axis="+Z", Side=outer (同向平面面里取沿 +Z 位置最外/最内者)
+    ///   "face:+Z:@0,0,0.5"  → Kind=Point, Axis="+Z", Point=[..](取通过该点的轴向平面面,点为世界坐标)
+    /// 轴向字母大小写不敏感,但正负号必须写、轴也必须写(Kind=Point 缺轴 = 方向不唯一,直接报错)。
     /// 坐标语义由顶层 coords 字段决定(2026-10-04):
     ///   缺省/"global" → 全局世界坐标,执行层投影(仅轴向面);
-    ///   "local"       → 该面贴面参考平面的局部 u/v,不投影(支持斜面)。
-    /// Kind=Axis 时正负号【不参与匹配】(投影法只能定出法向轴、定不出朝向):
-    /// 在法向轴为 Z 的面里取面积最大者;若同时存在两个同向面则报错,要求改用 face:&lt;ID&gt;。
+    ///   "local"       → 该面贴面参考平面的局部 u/v,不投影(支持斜面);与 Kind=Point 互斥。
+    /// 朝向语义(2026-10-23 修正,旧注释是旧版遗留):
+    ///   正负号【参与】匹配——"外法向朝 +Z" 指该面外法向指向 +Z 一侧;
+    ///   朝向由面的位置(Face.GetRange,米)相对模型包围盒该轴范围判定,
+    ///   与 :outer/:inner 的极值判定共用【同一个位置量】,不会出现"文案说外皮、实际是内腔"。
     /// </summary>
     public sealed class FacePlaneRef
     {
-        /// <summary>引用种类:"Id" 或 "Axis"。</summary>
+        /// <summary>引用种类:"Id" / "Axis" / "Point"。</summary>
         public string Kind;
 
         /// <summary>Kind=Id 时的 Face.ID。</summary>
         public int FaceId;
 
-        /// <summary>Kind=Axis 时的规范轴向符号:"+X"/"-X"/"+Y"/"-Y"/"+Z"/"-Z"。</summary>
+        /// <summary>Kind=Axis 与 Kind=Point 时的规范轴向符号:"+X"/"-X"/"+Y"/"-Y"/"+Z"/"-Z"。</summary>
         public string Axis;
+
+        /// <summary>Kind=Axis 时可选的极值方向:"outer"(沿轴向位置最大)/ "inner"(最小);null = 旧行为(唯一匹配才通过)。</summary>
+        public string Side;
+
+        /// <summary>Kind=Point 时的世界坐标 [x,y,z],单位【米】(2026-10-23)。</summary>
+        public double[] Point;
 
         /// <summary>解析失败原因;null = 可用。</summary>
         public string ParseError;
@@ -366,6 +536,13 @@ namespace SolidEdge.Spy.McpServer.Tools
         public string Value;
 
         public string Formula;
+
+        /// <summary>
+        /// 尺寸类型(2026-10-24):null/"length" = 长度(默认,AddLength);
+        /// "symdia" = 对称直径(旋转截面专用,AddSymmetricalDiameter,值=跨轴【直径】,标准画法)。
+        /// 注(2026-10-25):symdia 内部固定按「轴在前、母线在后」调用,Element 只决定哪条母线被标注。
+        /// </summary>
+        public string Type;
 
         /// <summary>解析失败原因;null = 可用。</summary>
         public string ParseError;
@@ -405,7 +582,7 @@ namespace SolidEdge.Spy.McpServer.Tools
                 "side", "profileside", "mode", "visible",
                 "coords",   // 2026-10-04:face 平面坐标模式 global(默认)|local(面局部 u/v,支持斜面)
                 "dir", "expectvolumedelta",   // 2026-09-29:显式方向 + 体积对账(extrude/cut/hole)
-                "circle", "circles", "slot", "rect", "polygon", "loops",
+                "circle", "circles", "slot", "rect", "polygon", "loops", "spline",
                 "axis", "angle", "degrees",   // revolve 专用
                 "autoconstraint", "fixorigin", "dims",   // 2026-09-13:完全约束+变量绑定(End 前应用)
                 "endmode",   // 预留
@@ -413,14 +590,28 @@ namespace SolidEdge.Spy.McpServer.Tools
                 "radius", "edges",           // fillet/chamfer 专用
                 "thickness",                 // rib 专用
                 "of", "xcount", "ycount", "xspacing", "yspacing",   // pattern 专用
+                // 2026-10-23 pattern 圆周阵列开放(kind/count/spacing/spacingDeg/clockwise/patterntype;
+                // center/radius 复用顶层通用解析:center=阵列圆心(平面局部 u/v),radius=草图阵列圆的显示半径)
+                "kind", "count", "spacing", "spacingdeg", "clockwise", "patterntype",
+                "suppress",               // 2026-11-08 pattern 矩形阵列单项抑制(1-based occurrence 序号数组)
                 // 2026-09-23 扩 op:hole(method 为 mode 的别名;center+diameter 为便捷写法)
                 "diameter", "center", "method",
+                "boltdia", "angledeg",   // 2026-10-24 hole 标准定位(分布圆+角度)
+                "angles",                // 2026-10-25 polarhole 极坐标孔角度列表(度)
+                "replaceof",             // 2026-10-24 替换语义:重建前按名删旧特征(hole/pattern 通用)
+                // 2026-10-23 hole:螺纹孔(规格 → 底孔/小径/螺距自动带出)
+                "thread", "standard", "threadoption",
                 // 2026-09-23 P2 多轮廓:loft / sweep / helix
                 "profiles", "origin", "pitch", "height", "revolutions",
+                "guides",   // 2026-10-31 loft_surface 导线(开放样条轮廓)
+                "openprofile",   // 2026-11-02 loft_surface 开口截面开关
+                // 2026-11-02 3D 曲线 op:spline3d(points/closed)/ arc3d(start/end/center/normal)
+                "points", "start", "end", "normal", "closed",
                 "trace",   // 2026-10-04:sweep 路径的线段+真圆弧混排声明(profiles[0] 专用)
                 "fillet",  // 2026-10-04:sweep 路径的圆角半径(配 polygon 顶点链,自动求切弧)
                 // 2026-09-23 P3 面引用机制:draft / thicken / delete_face / split / web_network
-                "faceOf", "faceNormal", "faceIndex", "confirm", "target"
+                "faceOf", "faceNormal", "faceIndex", "confirm", "target",
+                "edgeOf"   // 2026-11-09 bluesurf:边所属特征引用(edges 整数元素通道见解析段)
             };
 
         public static List<FeatureSpec> ParseAll(JsonElement[] features)
@@ -452,13 +643,51 @@ namespace SolidEdge.Spy.McpServer.Tools
                 s.Coords = coordsRaw.ToLowerInvariant();
                 s.CoordsLocal = s.Coords == "local";
             }
+            // 2026-10-23:coords:"local" 与点定位互斥——点是世界坐标,local 要的是该面局部 u/v,
+            // 语义冲突。解析层看不到 coords(coords 在上一步才解析),所以冲突判定放在这里,由 E203 报出。
+            if (s.CoordsLocal && s.FacePlaneRef != null && s.FacePlaneRef.Kind == "Point" &&
+                s.FacePlaneRef.ParseError == null)
+            {
+                s.FacePlaneRef.ParseError =
+                    "coords:\"local\" 与点定位 face:±A:@x,y,z 互斥(点是世界坐标,local 要的是面局部 u/v)。" +
+                    "请去掉 coords,或改用 face:<ID> / face:±A[:outer|:inner]。";
+            }
             s.BaseRef = GetStr(feat, "base");
             s.Mode = GetStr(feat, "mode") ?? GetStr(feat, "method");   // hole 可用 method 作 mode 别名
             s.EndMode = GetStr(feat, "endmode");
 
+            // 2026-10-23 hole:螺纹规格 / 孔标准 / 螺纹选项(实际孔径由规格自动带出)
+            s.Thread = GetStr(feat, "thread");
+            s.Standard = GetStr(feat, "standard");
+            s.ThreadOption = GetStr(feat, "threadoption");
+
             // hole 便捷写法:diameter(米) + center(局部 u/v,缺省 [0,0])
             if (TryGetDbl(feat, "diameter", out double holeDia)) s.Diameter = holeDia;
             s.Center = TryGetPoint2(feat, "center");
+            // 2026-10-24 hole 标准定位:boltdia + angleDeg(CI 防驼峰漏读)
+            if (TryGetDblCI(feat, "boltdia", out double bd)) s.BoltDia = bd;
+            if (TryGetDblCI(feat, "angledeg", out double sag)) s.StartAngleDeg = sag;
+            // 2026-10-25 polarhole:angles 角度列表(度),元素必须全是数字
+            if (feat.TryGetProperty("angles", out var anglesEl))
+            {
+                if (anglesEl.ValueKind == JsonValueKind.Array)
+                {
+                    var angles = new List<double>();
+                    bool ok = true;
+                    foreach (var aEl in anglesEl.EnumerateArray())
+                    {
+                        double a;
+                        if (TryGetNum(aEl, out a)) angles.Add(a);
+                        else { ok = false; break; }
+                    }
+                    if (ok) s.AnglesDeg = angles;
+                    else s.AnglesParseError = "angles 数组元素必须全是数字(度),如 \"angles\":[30, 75, 120]";
+                }
+                else
+                    s.AnglesParseError = "angles 必须是数字数组(度),如 \"angles\":[30, 75, 120]";
+            }
+            // 2026-10-24 替换语义:重建前按名删旧特征
+            s.ReplaceOf = GetStrCI(feat, "replaceof");
 
             // P2 多轮廓(2026-09-23):显式截面锚点 + helix 参数(pitch/height/revolutions)
             s.Origin = TryGetPoint2(feat, "origin");
@@ -530,6 +759,67 @@ namespace SolidEdge.Spy.McpServer.Tools
             if (TryGetDbl(feat, "xspacing", out double xs)) s.XSpacing = xs;
             if (TryGetDbl(feat, "yspacing", out double ys)) s.YSpacing = ys;
             s.Of = GetStr(feat, "of");
+
+            // 2026-10-23 pattern 圆周阵列:kind / count / spacing / spacingDeg / clockwise / patterntype
+            // (CI 读取:驼峰 spacingDeg/count 等大小写混写防漏读,同 TryGetBoolCI 教训)
+            s.Kind = GetStrCI(feat, "kind");
+            if (TryGetIntCI(feat, "count", out int pc)) s.PatCount = pc;
+            if (TryGetPropertyCI(feat, "spacing", out var spEl))
+            {
+                if (spEl.ValueKind == JsonValueKind.String &&
+                    string.Equals(spEl.GetString(), "fit", StringComparison.OrdinalIgnoreCase))
+                {
+                    s.Spacing = "fit";
+                    s.SpacingFit = true;
+                }
+                else if (spEl.ValueKind == JsonValueKind.Number)
+                {
+                    // 单位歧义(xspacing 是米,这里若收数字会被当成什么?):静态层拦下,要求显式 spacingDeg
+                    s.SpacingParseError = "spacing 不能是数字(与矩形 xspacing 的米单位易混)。整圈均布写 \"spacing\":\"fit\"," +
+                                          "固定角间距用 \"spacingDeg\":<度数>。";
+                }
+                else if (spEl.ValueKind == JsonValueKind.String)
+                {
+                    s.SpacingParseError = "spacing 只能是 \"fit\"(整圈均布,固定角间距改用 spacingDeg),收到 \"" + spEl.GetString() + "\"。";
+                }
+                else
+                {
+                    s.SpacingParseError = "spacing 只能是 \"fit\"(固定角间距改用 spacingDeg)。";
+                }
+            }
+            if (TryGetDblCI(feat, "spacingdeg", out double spdeg))
+            {
+                s.SpacingDeg = spdeg;
+                s.SpacingFit = false;   // 给了 spacingDeg 即固定间距模式;与 "fit" 并存由校验层报冲突
+            }
+            if (TryGetBoolCI(feat, "clockwise", out bool cw)) s.Clockwise = cw;
+            s.PatternType = GetStrCI(feat, "patterntype");
+            // 2026-11-08 pattern 矩形阵列:suppress(1-based occurrence 序号数组,单项抑制,列主序)
+            if (feat.TryGetProperty("suppress", out var supEl))
+            {
+                if (supEl.ValueKind == JsonValueKind.Array)
+                {
+                    var supList = new List<int>();
+                    bool supBad = false;
+                    int supIdx = 0;
+                    foreach (var supItem in supEl.EnumerateArray())
+                    {
+                        supIdx++;
+                        if (supItem.ValueKind == JsonValueKind.Number && supItem.TryGetInt32(out int supVal))
+                            supList.Add(supVal);
+                        else
+                        {
+                            supBad = true;
+                            s.SuppressParseError = "suppress 必须是整数数组(1-based occurrence 序号),如 \"suppress\":[5,9]——第 " +
+                                                   supIdx + " 项不是整数。";
+                            break;
+                        }
+                    }
+                    if (!supBad) s.Suppress = supList;
+                }
+                else
+                    s.SuppressParseError = "suppress 必须是整数数组(1-based occurrence 序号),如 \"suppress\":[5,9]。";
+            }
             if (TryGetBool(feat, "visible", out bool vb)) s.Visible = vb;
             if (TryGetBoolCI(feat, "autoconstraint", out bool ac)) s.AutoConstraint = ac;
             if (TryGetBoolCI(feat, "fixorigin", out bool fo)) s.FixOrigin = fo;
@@ -557,6 +847,7 @@ namespace SolidEdge.Spy.McpServer.Tools
                         ds.Name = GetStr(item, "name");
                         ds.Value = GetStr(item, "value");
                         ds.Formula = GetStr(item, "formula");
+                        ds.Type = GetStrCI(item, "type");
                         if (ds.Name == null)
                             ds.ParseError = (ds.ParseError != null ? ds.ParseError + ";" : "") + "缺 name";
                         else if (ds.Value == null && ds.Formula == null)
@@ -568,15 +859,35 @@ namespace SolidEdge.Spy.McpServer.Tools
             }
 
             // 边引用(fillet/chamfer 专用):解析失败也逐条记录,由校验器/构建器报出
+            // 2026-11-09 bluesurf:edges 元素为【整数】时走 EdgeIndices 通道(1-based Body.Edges 序),对象仍走 EdgeRefSpec
             if (feat.TryGetProperty("edges", out var edgesEl) && edgesEl.ValueKind == JsonValueKind.Array)
             {
                 foreach (var item in edgesEl.EnumerateArray())
-                    s.Edges.Add(ParseEdgeRef(item));
+                {
+                    if (item.ValueKind == JsonValueKind.Number && item.TryGetInt32(out int bi))
+                    {
+                        s.EdgeIndices.Add(bi);
+                        s.HasEdgeIndices = true;
+                    }
+                    else
+                    {
+                        s.Edges.Add(ParseEdgeRef(item));
+                    }
+                }
                 s.HasEdges = s.Edges.Exists(e => e.ParseError == null);
             }
             else if (feat.TryGetProperty("edges", out _))
             {
                 s.Edges.Add(new EdgeRefSpec { ParseError = "edges 必须是数组" });
+            }
+
+            // bluesurf(2026-11-09):edgeOf 特征引用(字符串)
+            if (feat.TryGetProperty("edgeOf", out var edgeOfEl))
+            {
+                if (edgeOfEl.ValueKind == JsonValueKind.String)
+                    s.EdgeOf = edgeOfEl.GetString();
+                else
+                    s.EdgeOfError = "edgeOf 必须是字符串(@别名 或 obj-K 句柄)";
             }
 
             // P2(2026-09-23):profiles 数组——loft/sweep/helix 的多轮廓声明。
@@ -598,6 +909,31 @@ namespace SolidEdge.Spy.McpServer.Tools
                     s.ProfilesError = "profiles 必须是数组,每项 {\"plane\":...,形状字段,origin?}。";
                 }
             }
+
+            // guides(导线,loft_surface 专用):与 profiles 同构的迷你特征,形状必须是开放样条
+            if (feat.TryGetProperty("guides", out var guidesEl))
+            {
+                if (guidesEl.ValueKind == JsonValueKind.Array)
+                {
+                    int gi = 0;
+                    foreach (var item in guidesEl.EnumerateArray())
+                        s.Guides.Add(Parse(item, gi++));
+                    s.HasGuides = s.Guides.Count > 0;
+                    if (!s.HasGuides)
+                        s.GuidesError = "guides 是空数组——要么不给,要么给至少 1 条导线。";
+                }
+                else
+                {
+                    s.GuidesError = "guides 必须是数组,每项 {\"plane\":...,\"spline\":[[u,v],...]}。";
+                }
+            }
+
+            // 开口截面开关(loft_surface 专用):只是放行标记,不改变形状解析
+            if (TryGetBoolCI(feat, "openprofile", out bool opf)) s.OpenProfile = opf;
+
+            // 3D 曲线 op(2026-11-02):spline3d / arc3d 的几何直接给世界坐标,不走平面草图解析
+            if (s.OpLower == "spline3d" || s.OpLower == "arc3d")
+                ParseCurve3D(feat, s);
 
             // sweep 的首项是路径(path):trace 走【线段+真圆弧混排】,polygon 按【开放链】解释(≥2 点,不闭合);
             // circle/rect/loops/slot 仍按闭合轮廓(闭合路径 = 扫一整圈)。其余 op 的 polygon 恒为闭合。
@@ -672,7 +1008,7 @@ namespace SolidEdge.Spy.McpServer.Tools
                 s.CircleX = cx; s.CircleY = cy; s.CircleR = r;
                 s.ShapeSource = "circle";
             }
-            else if (TryGetCircles(feat, out var circs))
+            else if (TryGetCircles(feat, s.OpLower == "hole", out var circs))
             {
                 s.Circles = circs;
                 s.HasCircles = true;
@@ -684,6 +1020,22 @@ namespace SolidEdge.Spy.McpServer.Tools
                 s.SlotX = sx; s.SlotY = sy; s.SlotLength = slen; s.SlotWidth = swid; s.SlotAngle = sang;
                 s.ShapeSource = "slot";
             }
+            else if (TryGetSpline(feat, out var spts, out int sord, out bool sclosed, out string splineErr))
+            {
+                if (splineErr != null)
+                {
+                    s.ShapeError = splineErr;
+                    s.ShapeSource = "";
+                }
+                else
+                {
+                    s.HasSpline = true;
+                    s.SplinePoints = spts;
+                    s.SplineOrder = sord;
+                    s.SplineClosed = sclosed;
+                    s.ShapeSource = "spline";
+                }
+            }
             else if (s.OpLower == "hole" && s.Diameter.HasValue && s.Diameter.Value > 0)
             {
                 // hole 便捷写法:center + diameter → 合成单圆轮廓(与 circle 等价,后续管线共用)
@@ -692,6 +1044,16 @@ namespace SolidEdge.Spy.McpServer.Tools
                 s.CircleY = s.Center != null && s.Center.Length >= 2 ? s.Center[1] : 0;
                 s.CircleR = s.Diameter.Value / 2.0;
                 s.ShapeSource = "circle";
+            }
+            else if (s.OpLower == "hole" && !string.IsNullOrWhiteSpace(s.Thread) && s.Center != null)
+            {
+                // 2026-10-23 螺纹孔最省事的写法:thread:"M10" + center:[x,y] —— 直径由规格带出,
+                // 这里只把中心点合成"半径 0 的孔位"(半径对孔命令没有意义,孔位才是输入)。
+                s.HasCircle = true;
+                s.CircleX = s.Center[0];
+                s.CircleY = s.Center[1];
+                s.CircleR = 0;
+                s.ShapeSource = "hole center(螺纹孔)";
             }
             else
             {
@@ -722,7 +1084,7 @@ namespace SolidEdge.Spy.McpServer.Tools
         }
 
         /// <summary>闭合轮廓形状字段名(trace 互斥判定用:只要声明过其中之一就不允许再给 trace)。</summary>
-        private static readonly string[] ShapeKeys = { "circle", "circles", "slot", "rect", "polygon", "loops", "fillet" };
+        private static readonly string[] ShapeKeys = { "circle", "circles", "slot", "rect", "polygon", "loops", "spline", "fillet" };
 
         /// <summary>feat 上是否声明过任一闭合轮廓形状字段(不看能否解析成功——声明过即算,避免无效多边形漏检)。</summary>
         private static bool HasAnyShapeKey(JsonElement feat)
@@ -744,6 +1106,74 @@ namespace SolidEdge.Spy.McpServer.Tools
         private static bool HasNonEmptyArray(JsonElement e, string key)
         {
             return e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Array && v.GetArrayLength() > 0;
+        }
+
+        // ---------------- 3D 曲线解析(spline3d / arc3d,2026-11-02) ----------------
+
+        /// <summary>
+        /// 3D 曲线的字段解析:坐标是世界坐标(米),不落在任何草图上,所以不进 Loops/形状链。
+        /// spline3d: {"op":"spline3d","points":[[x,y,z],...],"closed":false}
+        /// arc3d:    {"op":"arc3d","start":[x,y,z],"end":[x,y,z],"center":[x,y,z],"normal":[nx,ny,nz]?}
+        /// 半径不给:arc3d 的半径必须等于 |start-center|,由构建器按几何算,免得调用方踩 E_FAIL。
+        /// </summary>
+        private static void ParseCurve3D(JsonElement feat, FeatureSpec s)
+        {
+            if (s.OpLower == "spline3d")
+            {
+                if (!feat.TryGetProperty("points", out var ptsEl) || ptsEl.ValueKind != JsonValueKind.Array)
+                {
+                    s.Points3DError = "spline3d 需要 points 数组,每项 [x,y,z](世界坐标,米),至少 2 点。";
+                }
+                else
+                {
+                    int i = 0;
+                    foreach (var item in ptsEl.EnumerateArray())
+                    {
+                        double[] p = ParsePoint3(item);
+                        if (p == null)
+                        {
+                            s.Points3DError = "points[" + i + "] 不是 3 个数字的数组([x,y,z],米)。";
+                            s.Points3D.Clear();
+                            return;
+                        }
+                        s.Points3D.Add(p);
+                        i++;
+                    }
+                    if (s.Points3D.Count < 2)
+                        s.Points3DError = "spline3d 至少 2 个点(当前 " + s.Points3D.Count + " 个)。";
+                    else
+                        s.HasPoints3D = true;
+                }
+                if (TryGetBoolCI(feat, "closed", out bool closed)) s.Spline3DClosed = closed;
+                return;
+            }
+
+            s.Start3D = TryGetPoint3(feat, "start");
+            s.End3D = TryGetPoint3(feat, "end");
+            s.Center3D = TryGetPoint3(feat, "center");
+            s.Normal3D = TryGetPoint3(feat, "normal");
+            if (s.Start3D == null || s.End3D == null || s.Center3D == null)
+                s.Arc3DError = "arc3d 需要 start / end / center 三个 [x,y,z] 点(世界坐标,米)。";
+        }
+
+        private static double[] TryGetPoint3(JsonElement feat, string key)
+        {
+            if (feat.ValueKind != JsonValueKind.Object || !feat.TryGetProperty(key, out var v)) return null;
+            return ParsePoint3(v);
+        }
+
+        /// <summary>解析 [x,y,z];维数不是 3 或有非数字元素返回 null。</summary>
+        private static double[] ParsePoint3(JsonElement v)
+        {
+            if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() != 3) return null;
+            var vals = new double[3];
+            int i = 0;
+            foreach (var item in v.EnumerateArray())
+            {
+                if (!TryGetNum(item, out double d)) return null;
+                vals[i++] = d;
+            }
+            return vals;
         }
 
         // ---------------- 形状解析(与改造前 ModelingTools 的实现逐条对齐) ----------------
@@ -783,8 +1213,11 @@ namespace SolidEdge.Spy.McpServer.Tools
         /// 解析多真圆(circles)。写法:
         ///   "circles": [[x1,y1,r1],[x2,y2,r2], ...]
         /// 只保留 r&gt;0 的项;至少 1 个有效才算成功。用于一次切/拉多个真圆孔(如法兰螺栓孔阵列)。
+        ///
+        /// 2026-10-23:hole 例外——孔位坐标就够([x,y]),半径可省:
+        ///   光孔半径由 diameter 决定、螺纹孔直径由螺纹规格决定,circles 里的 r 只是摆设。
         /// </summary>
-        private static bool TryGetCircles(JsonElement feat, out List<double[]> circles)
+        private static bool TryGetCircles(JsonElement feat, bool radiusOptional, out List<double[]> circles)
         {
             circles = new List<double[]>();
             if (!feat.TryGetProperty("circles", out var v)) return false;
@@ -796,6 +1229,13 @@ namespace SolidEdge.Spy.McpServer.Tools
                 var arr = new List<double>();
                 foreach (var x in item.EnumerateArray())
                     arr.Add(x.ValueKind == JsonValueKind.Number ? x.GetDouble() : 0);
+
+                if (radiusOptional && arr.Count >= 2)
+                {
+                    double r0 = arr.Count >= 3 ? arr[2] : 0.0;
+                    circles.Add(new[] { arr[0], arr[1], r0 < 0 ? 0 : r0 });
+                    continue;
+                }
                 if (arr.Count < 3) continue;
                 if (arr[2] > 0) circles.Add(new[] { arr[0], arr[1], arr[2] });
             }
@@ -836,6 +1276,63 @@ namespace SolidEdge.Spy.McpServer.Tools
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// 解析 spline 截面(2026-10-31)。两种写法:
+        ///   "spline":[[u,v],[u,v],...]                       → order=3、不闭合
+        ///   "spline":{"points":[[u,v],...],"order":3,"closed":true}
+        /// 约束:点数 >= 3、order 2~5、点数 >= order(否则 SE 建不出曲线)。
+        /// </summary>
+        private static bool TryGetSpline(JsonElement feat, out double[][] pts, out int order, out bool closed, out string err)
+        {
+            pts = null; order = 3; closed = false; err = null;
+            if (!feat.TryGetProperty("spline", out var v)) return false;
+
+            JsonElement ptsEl;
+            if (v.ValueKind == JsonValueKind.Array)
+            {
+                ptsEl = v;
+            }
+            else if (v.ValueKind == JsonValueKind.Object && v.TryGetProperty("points", out var pe) && pe.ValueKind == JsonValueKind.Array)
+            {
+                ptsEl = pe;
+                order = (int)GetDbl(v, "order", 3);
+                bool c1, c2;
+                closed = (TryGetBool(v, "closed", out c1) && c1)
+                      || (TryGetBool(v, "close", out c2) && c2);
+            }
+            else
+            {
+                err = "spline 写法不对:要么给点列 [[u,v],...],要么给对象 {points:[[u,v],...], order?, closed?}。";
+                return true;
+            }
+
+            var list = new List<double[]>();
+            foreach (var it in ptsEl.EnumerateArray())
+            {
+                if (it.ValueKind != JsonValueKind.Array || it.GetArrayLength() < 2) continue;
+                if (it[0].ValueKind != JsonValueKind.Number) continue;
+                list.Add(new double[] { it[0].GetDouble(), it[1].ValueKind == JsonValueKind.Number ? it[1].GetDouble() : 0 });
+            }
+            pts = list.ToArray();
+
+            if (list.Count < 3)
+            {
+                err = "spline 至少要 3 个点(当前 " + list.Count + " 个)。";
+                return true;
+            }
+            if (order < 2 || order > 5)
+            {
+                err = "spline 的 order 只支持 2~5(当前 " + order + ")。";
+                return true;
+            }
+            if (list.Count < order)
+            {
+                err = "spline 点数(" + list.Count + ")少于阶数(" + order + "),建不出曲线。";
+                return true;
+            }
+            return true;
         }
 
         /// <summary>
@@ -955,11 +1452,15 @@ namespace SolidEdge.Spy.McpServer.Tools
         }
 
         /// <summary>
-        /// 解析 plane 字段的 "face:" 前缀(2026-10-03 IR 面锚定):
-        ///   "face:26"  → Kind=Id,   FaceId=26
-        ///   "face:+Z"  → Kind=Axis, Axis="+Z"(±X/±Y/±Z,大小写不敏感;正负号必须写)
+        /// 解析 plane 字段的 "face:" 前缀(2026-10-03 IR 面锚定;2026-10-23 扩写法):
+        ///   "face:26"           → Kind=Id,    FaceId=26
+        ///   "face:+Z"           → Kind=Axis,  Axis="+Z"                  (裸写=旧行为)
+        ///   "face:+Z:outer"     → Kind=Axis,  Axis="+Z", Side="outer"     (:inner 同理,大小写不敏感)
+        ///   "face:+Z:@0,0,0.5"  → Kind=Point, Axis="+Z", Point=[0,0,0.5]  (点=世界坐标,单位【米】)
         /// 非 "face:" 开头返回 null(照旧走 RefPlane_N / @别名 / obj-K);
         /// 格式非法时返回带 ParseError 的对象,由校验层 E203 报出。
+        /// ★ 三条硬要求:轴必须写(点定位也必写——点落在棱上时方向不唯一)、
+        ///   点是三维(缺维报错)、单位是米(不用毫米,见本文件 :15-16 的单位制)。
         /// </summary>
         public static FacePlaneRef ParseFacePlaneRef(string planeRef)
         {
@@ -972,7 +1473,7 @@ namespace SolidEdge.Spy.McpServer.Tools
             string body = planeRef.Substring(prefix.Length).Trim();
             if (body.Length == 0)
             {
-                fr.ParseError = "face: 后缺少内容(应为 Face.ID 整数或 ±X/±Y/±Z)";
+                fr.ParseError = "face: 后缺少内容(应为 Face.ID 整数或 ±X/±Y/±Z[:outer|:inner|:@x,y,z])";
                 return fr;
             }
 
@@ -983,17 +1484,87 @@ namespace SolidEdge.Spy.McpServer.Tools
                 return fr;
             }
 
-            string axis = body.ToUpperInvariant();
-            if (axis.Length == 2 && (axis[0] == '+' || axis[0] == '-') &&
-                (axis[1] == 'X' || axis[1] == 'Y' || axis[1] == 'Z'))
+            // 2026-10-23:点定位必须带轴向——"face:@x,y,z" 单独给点定不出方向(棱上一点属于多个面),直接拦。
+            if (body[0] == '@')
             {
-                fr.Kind = "Axis";
-                fr.Axis = axis;
+                fr.ParseError = "face:@x,y,z 缺少轴向(只给点无法定方向:同一位置的棱可能属于多个不同法向的面)。" +
+                                "请写成 face:+Z:@x,y,z(轴取该面外法向朝向,坐标单位米)。";
                 return fr;
             }
 
-            fr.ParseError = "face: 后应为 Face.ID 整数或 ±X/±Y/±Z(收到 \"" + body + "\")";
+            // 轴(必填) + 可选的两段后缀:":outer/:inner" 或 ":@" 点
+            string[] parts = body.Split(':');
+            if (parts.Length > 2)
+            {
+                fr.ParseError = "face: 后最多两段(轴:后缀),收到 \"" + body + "\"";
+                return fr;
+            }
+
+            string axis = parts[0].Trim().ToUpperInvariant();
+            if (!(axis.Length == 2 && (axis[0] == '+' || axis[0] == '-') &&
+                  (axis[1] == 'X' || axis[1] == 'Y' || axis[1] == 'Z')))
+            {
+                fr.ParseError = "face: 后应为 Face.ID 整数或 ±X/±Y/±Z[:outer|:inner|:@x,y,z](收到 \"" + body + "\")";
+                return fr;
+            }
+            fr.Kind = "Axis";
+            fr.Axis = axis;
+            if (parts.Length == 1) return fr;
+
+            string suffix = parts[1].Trim();
+            if (suffix.Length == 0)
+            {
+                fr.ParseError = "face:" + parts[0] + ": 后缺少内容(应为 outer / inner / @x,y,z)";
+                fr.Kind = null;
+                return fr;
+            }
+
+            if (suffix[0] == '@')
+            {
+                double[] pt = TryParsePoint3Meters(suffix.Substring(1));
+                if (pt == null)
+                {
+                    fr.ParseError = "face:" + parts[0] + ":" + suffix + " 的点无法解析(应为 @x,y,z 三个数字,单位米," +
+                                    "如 face:+Z:@0,0,0.5)";
+                    fr.Kind = null;
+                    return fr;
+                }
+                fr.Kind = "Point";
+                fr.Point = pt;
+                return fr;
+            }
+
+            string side = suffix.ToLowerInvariant();
+            if (side == "outer" || side == "inner")
+            {
+                fr.Side = side;
+                return fr;
+            }
+
+            fr.ParseError = "face:" + parts[0] + ":" + suffix + " 的后缀只能是 outer / inner / @x,y,z(收到 \"" +
+                            suffix + "\")";
+            fr.Kind = null;
             return fr;
+        }
+
+        /// <summary>
+        /// 解析 "x,y,z"(单位【米】,支持小数/负数/前后空格)。三个分量必须是有限数;
+        /// 缺维、多给维、非数字一律返回 null(由调用方转成 ParseError,不猜)。
+        /// </summary>
+        private static double[] TryParsePoint3Meters(string text)
+        {
+            if (text == null) return null;
+            string[] seg = text.Split(',');
+            if (seg.Length != 3) return null;
+            var pt = new double[3];
+            for (int i = 0; i < 3; i++)
+            {
+                if (!double.TryParse(seg[i].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out double v))
+                    return null;
+                if (double.IsNaN(v) || double.IsInfinity(v)) return null;
+                pt[i] = v;
+            }
+            return pt;
         }
 
         /// <summary>
@@ -1326,6 +1897,48 @@ namespace SolidEdge.Spy.McpServer.Tools
                     if (bool.TryParse(p.Value.GetString(), out val)) return true;
                 }
             }
+            return false;
+        }
+
+        /// <summary>大小写不敏感取原始属性元素(pattern 圆周阵列字段专用:spacingDeg/count 等驼峰键防漏读)。</summary>
+        private static bool TryGetPropertyCI(JsonElement e, string key, out JsonElement v)
+        {
+            v = default;
+            if (e.ValueKind != JsonValueKind.Object) return false;
+            foreach (var p in e.EnumerateObject())
+            {
+                if (string.Equals(p.Name, key, StringComparison.OrdinalIgnoreCase)) { v = p.Value; return true; }
+            }
+            return false;
+        }
+
+        /// <summary>大小写不敏感字符串读取(pattern 圆周阵列字段专用)。</summary>
+        private static string GetStrCI(JsonElement e, string key)
+        {
+            return TryGetPropertyCI(e, key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        }
+
+        /// <summary>大小写不敏感数值读取(pattern 圆周阵列字段专用)。</summary>
+        private static bool TryGetDblCI(JsonElement e, string key, out double val)
+        {
+            val = 0;
+            if (!TryGetPropertyCI(e, key, out var v)) return false;
+            if (v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d)) { val = d; return true; }
+            if (v.ValueKind == JsonValueKind.String &&
+                double.TryParse(v.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var d2))
+            { val = d2; return true; }
+            return false;
+        }
+
+        /// <summary>大小写不敏感整数读取(pattern 圆周阵列字段专用)。</summary>
+        private static bool TryGetIntCI(JsonElement e, string key, out int val)
+        {
+            val = 0;
+            if (!TryGetPropertyCI(e, key, out var v)) return false;
+            if (v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i)) { val = i; return true; }
+            if (v.ValueKind == JsonValueKind.String &&
+                int.TryParse(v.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var i2))
+            { val = i2; return true; }
             return false;
         }
 

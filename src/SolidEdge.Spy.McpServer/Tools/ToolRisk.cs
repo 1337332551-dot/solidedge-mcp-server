@@ -42,9 +42,9 @@ internal static class ToolRisk
 {
 	// ⚠️ 新增 [McpServerTool] 工具时必须同步登记,否则只读模式下被 fail-closed 拒绝。
 	//    有单测"全部McpServerTool方法都已登记"反射对账兜底。
-	private static readonly Dictionary<string, RiskTier> Table = new Dictionary<string, RiskTier>(23, StringComparer.Ordinal)
+	private static readonly Dictionary<string, RiskTier> Table = new Dictionary<string, RiskTier>(25, StringComparer.Ordinal)
 	{
-		// ---- Read 档(13):只读查询/静态校验/瞬态视图,不产生模型副作用 ----
+		// ---- Read 档(14):只读查询/静态校验/瞬态视图,不产生模型副作用 ----
 		["se_get_document"] = RiskTier.Read,
 		["se_get_selection"] = RiskTier.Read,
 		["se_find_paths"] = RiskTier.Read,
@@ -52,20 +52,27 @@ internal static class ToolRisk
 		["se_walk_object"] = RiskTier.Read,
 		["se_batch_read"] = RiskTier.Read,
 		["se_read_geometry"] = RiskTier.Read,
-		["se_get_variables"] = RiskTier.Read,
+		["se_find_objects"] = RiskTier.Read,       // 按条件枚举 faces/lines/dimensions/occurrences,只读查询不碰模型
+		["se_read_model_state"] = RiskTier.Read,   // 拓扑/特征树只读,不碰建模通道
+		// se_model_state_snapshot(2026-11-07 并入 se_snapshot_diff scope=faces,见 ToolAliases)
+		["se_get_variables"] = RiskTier.Read,      // 默认 action=list/get 只读;set/add 在工具内部按 action 拦(只读模式拒绝)
 		["se_view_context"] = RiskTier.Read,
 		["se_capture_viewport"] = RiskTier.Read,
 		["se_snapshot_diff"] = RiskTier.Read,      // 本地快照 store,不碰 COM
-		["se_validate_features"] = RiskTier.Read,  // 纯静态校验,不碰 COM
+		// se_validate_features(2026-11-07 并入 se_model_build dryRun,见 ToolAliases;只读模式
+		// 经 Program.cs 特例注册 + Check(tool, dryRun) 特例保住离线校验能力)
 		["se_assembly_query"] = RiskTier.Read,     // 装配只读查询(occurrences/relations/bom),只读模式可用
+		// se_verify_model(2026-11-07 并入 se_read_model_state verify=expects,见 ToolAliases)
 
-		// ---- Session 档(3):文档会话操作 ----
+		// ---- Session 档(4):文档会话操作 ----
 		["se_open_document"] = RiskTier.Session,
 		["se_new_document"] = RiskTier.Session,
+		["se_save_document"] = RiskTier.Session,   // 落盘(含覆盖/占用处理),与 open/close 同档
 		["se_close_document"] = RiskTier.Session,
 
-		// ---- Model 档(5):写模型/装配 ----
+		// ---- Model 档(6):写模型/装配 ----
 		["se_model_build"] = RiskTier.Model,
+		["se_set_feature_parameter"] = RiskTier.Model,  // 改特征参数(如阵列孔数),等效建模写操作
 		["se_invoke_member"] = RiskTier.Model,
 		["se_invoke_chain"] = RiskTier.Model,
 		["se_recipe_run"] = RiskTier.Model,
@@ -116,6 +123,20 @@ internal static class ToolRisk
 	}
 
 	/// <summary>
+	/// 带参数感知的门禁(tools/call 用)。readonly 特例:se_model_build 且 dryRun=true 是纯静态校验、
+	/// 不碰 COM,按 Read 档放行——2026-11-07 se_validate_features 并入 se_model_build 后,
+	/// 只读模式的"离线校验"能力由本特例保住(非 dryRun 的真建仍拒绝)。
+	/// </summary>
+	internal static string Check(string tool, bool dryRun)
+	{
+		if (Mode == McpMode.ReadOnly && tool == "se_model_build" && dryRun)
+		{
+			return null;
+		}
+		return Check(tool);
+	}
+
+	/// <summary>
 	/// engineer 模式的成员级白名单:仅对自由调用通道(se_invoke_member/se_invoke_chain)生效。
 	/// 2026-10-05 整改:旧规则只认 "get" 前缀,而 SE IDispatch 的读取绝大多数是【属性式】
 	/// (Models / Count / Item / Body / Name / Status …),名字里根本没有 get → 被一刀拦死,
@@ -143,7 +164,7 @@ internal static class ToolRisk
 		"Models", "Model", "Body", "Bodies", "Shells", "Faces", "Edges", "Vertices", "Loops",
 		"RefPlanes", "ProfileSets", "Profiles", "Sketches",
 		// 特征集合
-		"ExtrudedProtrusions", "ExtrudedCutouts", "RevolvedProtrusions", "RevolvedCutouts",
+		"Features", "ExtrudedProtrusions", "ExtrudedCutouts", "RevolvedProtrusions", "RevolvedCutouts",
 		"Holes", "Fillets", "Chamfers", "Ribs", "Patterns", "Lofts", "SweptProtrusions",
 		// 草图/几何量
 		"Lines2d", "Circles2d", "Arcs2d", "Relations2d", "Dimensions", "Profile",

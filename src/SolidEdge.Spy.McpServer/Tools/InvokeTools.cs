@@ -39,7 +39,14 @@ public static class InvokeTools
 	private static int _typeLibsLoaded;
 
 	[McpServerTool]
-	[Description("批量执行多步成员调用(一次 MCP 调用跑完整条依赖链)。每步 {member, args[], on?};on 指定本步调用目标(默认=上一步返回值,首步=起始对象),支持 \"$$\"(起始对象)/\"$N\"(第N步返回值)/\"obj-K\"(已登记句柄);args 支持占位符: \"$$\"=起始对象, \"$N\"=第 N 步(1-based)返回的 COM 对象。所有步骤在同一 STA 调用内串行执行,中间句柄不回传即可串联,是大批量建模(如椅子/桌子的多特征)的推荐方式。返回值/out 中的 COM 对象自动登记句柄表。任一步失败立即中断并返回已完成步骤与错误。注意:$N 引用的是第 N 步的返回值,编号从 1 开始。护栏:整条链在执行前按最高危步骤判定,含破坏性成员(Delete/Cut/Drop/Remove* 等)时需 confirm=true 才执行;改变模型的步骤会记入审计日志。")]
+	[Description("批量执行多步成员调用:一次调用跑完整条依赖链。每步 {member, args[], on?};" +
+		"on 指定本步目标(默认=上一步返回值,首步=起始对象),可写 \"$$\"/\"$N\"/\"obj-K\";" +
+		"args 里 \"$$\"=起始对象、\"$N\"=第 N 步(1-based)返回值。所有步骤在同一 STA 内串行执行," +
+		"返回值/out 里的 COM 对象自动登记句柄;任一步失败立即中断并返回已完成步骤。\n" +
+		"步骤级可选:skipIfZero:\"$N\"(第 N 步为 0 时跳过本步及其下游,标 status=skipped,步序不变);" +
+		"each:[{...}](对数组每项重复调用同一成员,args 里 {{key}} 引用当前项字段、标量数组用 {{_}}," +
+		"返回 each=项数与 results,失败指出第几项,$N 取最后一项结果)。\n" +
+		"护栏:按最高危步骤预判,含破坏性成员(Delete/Cut/Drop/Remove* 等)需 confirm=true;执行链以最高危成员名义记 1 条审计。")]
 	public static string se_invoke_chain(SolidEdgeContext context, [Description("起始对象句柄,如 \"obj-1\"。后续步骤可用 \"$$\" 引用它。")] string objectId, [Description("步骤数组,每步 {\"member\":\"方法/属性\", \"args\":[...]}。args 可用 \"$$\" / \"$N\" 引用前序对象。")] JsonElement[] steps, [Description("可选,链中含破坏性成员(Delete/Cut/Drop/Remove* 等)时需显式置 true,否则整条链在执行前被拒绝。默认 false")] bool confirm = false)
 	{
 		try
@@ -91,9 +98,17 @@ public static class InvokeTools
 				{
 					AuditLog.Write("se_invoke_chain", objectId, riskiestMember ?? "(chain)", false, chainArgs, chainRisk, true, null);
 				}
+				// steps 显式传 null 时(风险扫描循环对 null 是防御的,这里必须同样防御,否则 steps.Length 抛 NRE
+				// 被外层 catch 后只剩零指路的 NullReferenceException 消息)。与 se_model_build 的 features 空检查对称。
+				if (steps == null || steps.Length == 0)
+				{
+					return Error("steps 不能为空:每步需要 {\"member\":\"方法/属性\",\"args\":[...]}。");
+				}
 				List<object> stepResults = new List<object>();
 				Dictionary<int, string> stepHandles = new Dictionary<int, string>();
 				List<object> list = new List<object>();
+				// 被跳过的步(1-based)。跳过的步仍占位,保证 $N 编号与原步序一致。
+				HashSet<int> skippedSteps = new HashSet<int>();
 				for (int i = 0; i < steps.Length; i++)
 				{
 					if (!steps[i].TryGetProperty("member", out var value) || value.ValueKind != JsonValueKind.String)
@@ -110,6 +125,51 @@ public static class InvokeTools
 							list2.Add((item2.ValueKind == JsonValueKind.String) ? item2.GetString() : item2.ToString());
 						}
 						array = list2.ToArray();
+					}
+					// skipIfZero / 级联跳过:集合为空时不硬取 Item(1)。
+					// 跳过的步在 stepResults 补 null、在 list 补一条 skipped,保持 $N 编号与原步序一致。
+					string skipReason = null;
+					int zeroRef = ParseSkipIfZero(steps[i]);
+					if (zeroRef > 0)
+					{
+						if (zeroRef >= i + 1)
+						{
+							return Error("第 " + (i + 1) + " 步的 skipIfZero 引用 $" + zeroRef + " 无效:$N 只能引用前序步骤。");
+						}
+						if (skippedSteps.Contains(zeroRef))
+						{
+							skipReason = "所引用的第 " + zeroRef + " 步已被跳过";
+						}
+						else if (IsStepValueZero(list, zeroRef))
+						{
+							skipReason = "第 " + zeroRef + " 步的值为 0";
+						}
+					}
+					else
+					{
+						int dep = FirstSkippedDependency(steps[i], array, skippedSteps);
+						if (dep > 0)
+						{
+							skipReason = "所依赖的第 " + dep + " 步已被跳过";
+						}
+						else if (i >= 1 && skippedSteps.Contains(i) && !HasOwnTarget(steps[i]))
+						{
+							// 省略 on 时默认接上一步返回值;上一步被跳过就没有可接的对象,同样级联跳过。
+							skipReason = "省略 on 时默认接上一步,而第 " + i + " 步已被跳过";
+						}
+					}
+					if (skipReason != null)
+					{
+						skippedSteps.Add(i + 1);
+						stepResults.Add(null);
+						list.Add(JsonSerializer.Deserialize<JsonElement>(JsonSerializer.Serialize(new
+						{
+							status = "skipped",
+							objectId = objectId,
+							member = text,
+							reason = skipReason
+						})));
+						continue;
 					}
 					string typeNameHint = null;
 					object targetObj;
@@ -187,6 +247,56 @@ public static class InvokeTools
 							}
 						}
 					}
+					// ---- each:一步内对数组每项重复调用同一成员,args 里用 {{key}} 引用当前项的字段 ----
+					// 典型用法(一次写完十几个变量,不用写十几步):
+					//   {"member":"Edit","on":"$4","args":["{{n}}","{{v}}"],
+					//    "each":[{"n":"Pipe_OD","v":"89 mm"},{"n":"Pipe_ID","v":"81 mm"}]}
+					// 标量数组也支持,用 {{_}} 取当前值。
+					if (steps[i].TryGetProperty("each", out var eachElem)
+						&& eachElem.ValueKind == JsonValueKind.Array
+						&& eachElem.GetArrayLength() > 0)
+					{
+						var subResults = new List<object>();
+						object lastItem = null;
+						string subError = null;
+						int subNo = 0;
+						foreach (JsonElement row in eachElem.EnumerateArray())
+						{
+							subNo++;
+							string[] rowArgs = ExpandEachArgs(array, row);
+							var (jsonRow, itemRow, errRow) = RunStep(context, targetObj, typeNameHint, objectId, text, rowArgs);
+							if (errRow != null)
+							{
+								subError = "each 第 " + subNo + " 项失败: " + errRow;
+								break;
+							}
+							lastItem = itemRow;
+							subResults.Add(JsonSerializer.Deserialize<JsonElement>(jsonRow));
+						}
+						if (subError != null)
+						{
+							return JsonSerializer.Serialize(new
+							{
+								status = "error",
+								objectId = objectId,
+								failedStep = i + 1,
+								failedMember = text,
+								message = subError,
+								completedSteps = list
+							});
+						}
+						// $N 语义保持:each 步整体算一步,引用的值取"最后一项"的结果(Edit 无返回值时为 null)
+						stepResults.Add(lastItem);
+						list.Add(JsonSerializer.Deserialize<JsonElement>(JsonSerializer.Serialize(new
+						{
+							status = "ok",
+							objectId = objectId,
+							member = text,
+							each = subResults.Count,
+							results = subResults
+						})));
+						continue;
+					}
 					var (json, item, text6) = RunStep(context, targetObj, typeNameHint, objectId, text, array);
 					if (text6 != null)
 					{
@@ -239,6 +349,192 @@ public static class InvokeTools
 		}
 	}
 
+	// ---------------- each(一步内批量,2026-10-25) ----------------
+
+	/// <summary>把 each 当前项的值填进 args 里的 {{key}} 占位符;args 为 null 时原样返回 null。</summary>
+	private static string[] ExpandEachArgs(string[] args, JsonElement row)
+	{
+		if (args == null)
+		{
+			return null;
+		}
+		string[] result = new string[args.Length];
+		for (int j = 0; j < args.Length; j++)
+		{
+			result[j] = ExpandEachToken(args[j], row);
+		}
+		return result;
+	}
+
+	/// <summary>
+	/// 替换 {{key}}:row 是对象时取同名字段;row 是标量时用 {{_}}(或 {{value}}) 取它本身。
+	/// 找不到对应键就**原样保留**占位符 —— 拼错时要看得见,而不是静默变成空串。
+	/// internal 以便单测。
+	/// </summary>
+	internal static string ExpandEachToken(string text, JsonElement row)
+	{
+		if (string.IsNullOrEmpty(text) || text.IndexOf("{{", StringComparison.Ordinal) < 0)
+		{
+			return text;
+		}
+		StringBuilder sb = new StringBuilder();
+		int from = 0;
+		while (true)
+		{
+			int s = text.IndexOf("{{", from, StringComparison.Ordinal);
+			if (s < 0)
+			{
+				sb.Append(text, from, text.Length - from);
+				break;
+			}
+			sb.Append(text, from, s - from);
+			int e = text.IndexOf("}}", s + 2, StringComparison.Ordinal);
+			if (e < 0)
+			{
+				sb.Append(text, s, text.Length - s);
+				break;
+			}
+			string key = text.Substring(s + 2, e - (s + 2)).Trim();
+			string val = LookupItemValue(row, key);
+			if (val == null)
+			{
+				sb.Append(text, s, e + 2 - s);
+			}
+			else
+			{
+				sb.Append(val);
+			}
+			from = e + 2;
+		}
+		return sb.ToString();
+	}
+
+	private static string LookupItemValue(JsonElement row, string key)
+	{
+		if (row.ValueKind == JsonValueKind.Object)
+		{
+			JsonElement v;
+			if (!row.TryGetProperty(key, out v))
+			{
+				return null;
+			}
+			return (v.ValueKind == JsonValueKind.String) ? v.GetString() : v.ToString();
+		}
+		if (key == "_" || key == "value")
+		{
+			return (row.ValueKind == JsonValueKind.String) ? row.GetString() : row.ToString();
+		}
+		return null;
+	}
+
+	// ---------------- skipIfZero(可选的步骤级跳过) ----------------
+
+	/// <summary>匹配 "$N" 步骤引用,用于收集某一步直接依赖的前序步骤。</summary>
+	private static readonly System.Text.RegularExpressions.Regex ChainStepRefPattern = new System.Text.RegularExpressions.Regex(@"\$(\d+)", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+	/// <summary>读一步的 "skipIfZero" 字段,返回它引用的步号(1-based);未声明或写法非法返回 0。internal 以便单测。</summary>
+	internal static int ParseSkipIfZero(JsonElement step)
+	{
+		JsonElement el;
+		if (!step.TryGetProperty("skipIfZero", out el))
+		{
+			return 0;
+		}
+		string text = (((el.ValueKind == JsonValueKind.String) ? el.GetString() : el.ToString()) ?? "").Trim();
+		if (text.StartsWith("$", StringComparison.Ordinal))
+		{
+			text = text.Substring(1);
+		}
+		int n;
+		return int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out n) ? n : 0;
+	}
+
+	/// <summary>找出这一步直接依赖、且已被跳过的步号(on 与 args 里的 $N 引用);没有则返回 0。internal 以便单测。</summary>
+	internal static int FirstSkippedDependency(JsonElement step, string[] args, HashSet<int> skipped)
+	{
+		if (skipped == null || skipped.Count == 0)
+		{
+			return 0;
+		}
+		JsonElement onEl;
+		if (step.TryGetProperty("on", out onEl) && onEl.ValueKind == JsonValueKind.String)
+		{
+			int hitOn = FirstSkippedRef(onEl.GetString(), skipped);
+			if (hitOn > 0)
+			{
+				return hitOn;
+			}
+		}
+		if (args != null)
+		{
+			for (int i = 0; i < args.Length; i++)
+			{
+				int hitArg = FirstSkippedRef(args[i], skipped);
+				if (hitArg > 0)
+				{
+					return hitArg;
+				}
+			}
+		}
+		return 0;
+	}
+
+	/// <summary>该步是否显式给了 on(字符串形式的调用目标)。false = 会走"默认接上一步返回值"分支。internal 以便单测。</summary>
+	internal static bool HasOwnTarget(JsonElement step)
+	{
+		JsonElement onEl;
+		return step.TryGetProperty("on", out onEl) && onEl.ValueKind == JsonValueKind.String;
+	}
+
+	private static int FirstSkippedRef(string token, HashSet<int> skipped)
+	{
+		if (string.IsNullOrEmpty(token))
+		{
+			return 0;
+		}
+		foreach (System.Text.RegularExpressions.Match m in ChainStepRefPattern.Matches(token))
+		{
+			int n;
+			if (int.TryParse(m.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out n) && skipped.Contains(n))
+			{
+				return n;
+			}
+		}
+		return 0;
+	}
+
+	/// <summary>第 refStep 步(1-based)结果的 returnValue.value 是否为数值 0。读不到或非数值一律按 false(不跳过)。internal 以便单测。</summary>
+	internal static bool IsStepValueZero(List<object> results, int refStep)
+	{
+		if (results == null || refStep < 1 || refStep > results.Count)
+		{
+			return false;
+		}
+		JsonElement el;
+		if (!(results[refStep - 1] is JsonElement))
+		{
+			return false;
+		}
+		el = (JsonElement)results[refStep - 1];
+		JsonElement rv;
+		if (!el.TryGetProperty("returnValue", out rv) || rv.ValueKind != JsonValueKind.Object)
+		{
+			return false;
+		}
+		JsonElement v;
+		if (!rv.TryGetProperty("value", out v))
+		{
+			return false;
+		}
+		string text = (((v.ValueKind == JsonValueKind.String) ? v.GetString() : v.ToString()) ?? "").Trim();
+		if (text.Length == 0)
+		{
+			return false;
+		}
+		double d;
+		return double.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out d) && d == 0.0;
+	}
+
 	private static (string statusJson, object comResult, string error) RunStep(SolidEdgeContext context, object targetObj, string typeNameHint, string objectId, string member, string[] args)
 	{
 		if (string.IsNullOrWhiteSpace(member))
@@ -248,6 +544,14 @@ public static class InvokeTools
 		if (BlockedMembers.IsBlocked(member.Trim()))
 		{
 			return (statusJson: null, comResult: null, error: "拒绝调用 " + member.Trim() + ":它属于邮件/会签类副作用成员,读取或调用会激活 MAPI 子系统,可能弹出模态对话框并堵死 COM 通道(共享黑名单见 BlockedMembers)。");
+		}
+		// 2026-11-06: 本会话追踪的文档禁止走通用通道 Close —— 该通道不带 SaveChanges=false,
+		// SE 在"已 Save 但 Dirty 未清"时仍弹"要保存更改吗"模态框堵死 COM。关闭请走 se_close_document
+		// (它有未保存检查/confirm,本工具永不保存);未追踪文档不受此限。(自 dot/master 同步,适配本地 TrackedDocs)
+		if (string.Equals(member.Trim(), "Close", StringComparison.OrdinalIgnoreCase)
+			&& DocumentTools.IsTrackedDocument(targetObj))
+		{
+			return (statusJson: null, comResult: null, error: "拒绝用 se_invoke_member 关闭已追踪文档:该通道会触发 SE 的\"要保存更改吗\"模态框并堵死 COM(即使刚 Save 过,Dirty 也可能未清)。请改用 se_close_document(需丢弃未保存修改时传 confirm=true;本工具永不保存)。");
 		}
 		if (targetObj == null)
 		{
@@ -419,8 +723,15 @@ public static class InvokeTools
 	}
 
 	[McpServerTool]
-	[Description("在选中对象(obj-N)上执行一个成员(方法或带参属性),如标注关联查询的 GetRelatedCount / GetRelated。参数 args 按成员签名的入参顺序提供(int/double/string,也可传 obj-N 引用已有句柄对象);out 参数自动识别并填充,无需提供。返回值及 out 参数中的 COM 对象自动登记为新句柄(obj-N),可用 se_describe_object 继续下钻。propertySet=true 时把 member 当【属性写入】(如 Depth / Visible),args[0] 为属性新值(支持数字/bool/字符串/obj-N 对象)——写属性会触发模型重算。护栏:Delete/Cut/Drop/Erase/Purge/Remove* 等破坏性成员一律先拒绝,确认执行需追加 confirm=true;Add*/Set*/Move/写属性等会改变模型的操作允许执行,但会写入审计日志(%LOCALAPPDATA%\\SolidEdgeSpy\\mcp-audit.log)且通常触发重算;设环境变量 SE_MCP_READONLY=1 可全局禁写(默认关闭,否则建模配方会失效)。注意:查询链路中不要再调 se_get_selection,它会清空句柄表导致先前句柄失效。单位约定:Solid Edge API 返回的长度/坐标为内部单位米(m),UI 显示毫米(mm),换算 ×1000;角度为弧度。")]
-	public static string se_invoke_member(SolidEdgeContext context, [Description("对象编号,如 obj-1(se_get_selection 返回)")] string objectId, [Description("成员名(方法或带参属性),如 GetRelatedCount / GetRelated;propertySet=true 时为要写的属性名")] string member, [Description("可选,按成员入参顺序的参数值列表(int/double/string,或 obj-N 对象引用);propertySet=true 时 args[0] 为属性新值")] string[] args = null, [Description("可选,设为 true 表示写属性(PROPERTYPUT),args[0] 为属性新值。默认 false=只读调用")] bool propertySet = false, [Description("可选,破坏性成员(Delete/Cut/Drop/Remove* 等)需显式置 true 才会执行,不确认则直接拒绝。默认 false")] bool confirm = false, [Description("可选(仅对 propertySet=true 生效):写完后自动回读同名属性并比对,默认 true。返回 verified=true/false 与 readBack——'写入无报错但实际没生效'是实测踩过的坑(被 SE 规范化/联动/静默忽略),故默认开启校验;确实不可读的只写属性会在 verifyNote 里说明")] bool verify = true)
+	[Description("在选中对象(obj-N)上执行一个成员(方法或带参属性),如 GetRelatedCount / GetRelated。" +
+		"args 按签名入参顺序给(int/double/string,也可传 obj-N);out 参数自动识别填充。返回值及 out 里的 COM 对象自动登记为新句柄(obj-N)。" +
+		"propertySet=true 时把 member 当【属性写入】(如 Depth/Visible),args[0] 为新值,会触发模型重算。\n" +
+		"护栏:Delete/Cut/Drop/Erase/Purge/Remove* 等破坏性成员先拒绝,确认需 confirm=true;" +
+		"confirm 只解除拦截、不核验删除证据——建议先用 se_read_model_state 或 se_describe_object 确认目标是 featureHealth=igFeatureFailed 的僵尸再删," +
+		"Warned/Suppressed/RolledBack 一律保留。写操作会记审计日志并通常触发重算;SE_MCP_READONLY=1 可全局禁写。\n" +
+		"注意:查询链路中不要再调 se_get_selection(会清空句柄表)。单位:API 长度/坐标=米(UI 毫米 ×1000),角度=弧度。")]
+	public static string se_invoke_member(SolidEdgeContext context, [Description("对象编号,如 obj-1(se_get_selection 返回)")] string objectId, [Description("成员名(方法或带参属性),如 GetRelatedCount / GetRelated;propertySet=true 时为要写的属性名")] string member, [Description("可选,按成员入参顺序的参数值列表(int/double/string,或 obj-N 对象引用);propertySet=true 时 args[0] 为属性新值")] string[] args = null, [Description("可选,设为 true 表示写属性(PROPERTYPUT),args[0] 为属性新值。默认 false=只读调用")] bool propertySet = false, [Description("可选,破坏性成员(Delete/Cut/Drop/Remove* 等)需显式置 true 才会执行,不确认则直接拒绝。默认 false")] bool confirm = false, [Description("可选(仅 propertySet=true):写后自动回读同名属性比对,默认 true。返回 verified 与 readBack——" +
+		"'写入没报错但实际没生效'是实测踩过的坑;不可读的只写属性在 verifyNote 里说明")] bool verify = true)
 	{
 		try
 		{
@@ -883,10 +1194,7 @@ public static class InvokeTools
 		}).ToList();
 	}
 
-	private static string DescribeParams(ComParameterInfo[] parameters)
-	{
-		return string.Join(", ", parameters.Select((ComParameterInfo p) => p.Name + ":" + ResolveVt(p).ToString() + ((ResolveUserDefinedName(p) != null) ? ("(" + ResolveUserDefinedName(p) + ")") : "") + (p.IsIn ? "[in]" : "") + (p.IsOut ? "[out]" : "") + (p.IsRetval ? "[retval]" : "")));
-	}
+	// 2026-10-25 审计:DescribeParams(原 L1047,参数签名拼接助手)全项目零调用,已删除
 
 	private static bool InvokeWithSlots(object target, string member, List<ArgSlot> slots, out object result, out Exception error)
 	{
@@ -1076,7 +1384,9 @@ public static class InvokeTools
 			{
 				name = name,
 				type = "(null)",
-				value = (string)null
+				value = (string)null,
+				// P3-2b:说明这是成员真实返回 null,不是读取失败(读取失败会走 error 路径)
+				note = "成员真实返回 null(对象模型的空引用,非读取失败)"
 			};
 		}
 		if (Marshal.IsComObject(value))
@@ -1130,38 +1440,8 @@ public static class InvokeTools
 
 	private static string DescribeException(Exception ex)
 	{
-		if (ex == null)
-		{
-			return "(未知错误)";
-		}
-		StringBuilder stringBuilder = new StringBuilder();
-		Exception ex2 = ex;
-		int num = 0;
-		while (ex2 != null && num < 3)
-		{
-			if (num > 0)
-			{
-				stringBuilder.Append(" <- 内部: ");
-			}
-			stringBuilder.Append(ex2.GetType().Name);
-			if (!string.IsNullOrEmpty(ex2.Message))
-			{
-				stringBuilder.Append(": ").Append(ex2.Message);
-			}
-			try
-			{
-				if (ex2.HResult != 0 && ex2.HResult != -2146232828)
-				{
-					stringBuilder.Append(" (HRESULT=0x").Append(ex2.HResult.ToString("X8")).Append(')');
-				}
-			}
-			catch
-			{
-			}
-			ex2 = ex2.InnerException;
-			num++;
-		}
-		return stringBuilder.ToString();
+		// P2-1:统一走 EvidenceContract(过去私有副本行为漂移,已收编)
+		return EvidenceContract.DescribeException(ex);
 	}
 
 	private static void EnsureTypeLibrariesLoaded()

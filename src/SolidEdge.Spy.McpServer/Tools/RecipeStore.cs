@@ -39,6 +39,26 @@ internal static class RecipeStore
 	}
 
 	/// <summary>
+	/// 新配方落盘目录。默认写用户兜底目录(不污染 git 仓库);
+	/// project=true 且能找到仓库 recipes 目录时才写仓库。
+	///
+	/// 注意搜索优先级是"仓库 → 用户目录,先命中优先",所以仓库里已有同名配方时,
+	/// 写到用户目录的那条【不会生效】—— 调用方需要自己处理覆盖(见 --recipe-save --force)。
+	/// </summary>
+	internal static string SaveDir(bool project)
+	{
+		if (project)
+		{
+			string adjacent = FindAdjacentRecipesDir();
+			if (adjacent != null)
+			{
+				return adjacent;
+			}
+		}
+		return DefaultDir();
+	}
+
+	/// <summary>
 	/// 从 exe 所在目录向上找名为 recipes 的目录(本仓库布局:src/…/bin/Release/net8.0-windows/ → 仓库根/recipes)。
 	/// 这样本仓库开箱即用,不必去改 MCP 客户端配置。
 	///

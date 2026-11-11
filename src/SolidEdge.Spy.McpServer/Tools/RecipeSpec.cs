@@ -28,6 +28,24 @@ public sealed class RecipeSpec
 	/// <summary>draft(研发中,AI 可写) | verified(已固化,需用户拍板)。</summary>
 	public string Status = "draft";
 
+	/// <summary>
+	/// step(默认:声明式 steps,走 se_invoke_chain) | script(壳式:整段脚本 + 参数,steps 为空)。
+	///
+	/// script 形态由 CLI `--recipe-save` 从已经跑通的 se_script_run 脚本生成,目的是把"一次性草稿"
+	/// 转成"有名字、有参数、能被 --recipes 发现"的资产。执行时转交脚本通道,不做步骤级护栏,
+	/// 所以 risk 只能靠声明值 —— 这也是它 status 默认 draft 的原因。
+	/// </summary>
+	public string Kind = "step";
+
+	/// <summary>kind=script 时:沙箱里的脚本名(se_script_run 的 name)。</summary>
+	public string ScriptName;
+
+	/// <summary>kind=script 时:固化时的脚本文件路径(留作溯源,执行时按 ScriptName 去沙箱找)。</summary>
+	public string ScriptPath;
+
+	/// <summary>kind=script 时:固化时的源码 SHA256。脚本被改过就提示"配方可能已失配"。</summary>
+	public string ScriptSha256;
+
 	/// <summary>normal | modelChanging | destructive。**只是提示**,执行时以 Guardrail 重算为准。</summary>
 	public string Risk;
 
@@ -103,6 +121,12 @@ public sealed class RecipeStep
 
 	public string[] Args;
 
+	/// <summary>
+	/// 可选。形如 "$N":第 N 步的 returnValue.value 为数值 0 时跳过本步(而不是硬调用)。
+	/// 用于"集合为空就不要取 Item(1)"这类场景。被跳过的步仍占步序编号,引用了它的后续步骤自动级联跳过。
+	/// </summary>
+	public string SkipIfZero;
+
 	public JsonElement Raw;
 }
 
@@ -145,6 +169,18 @@ public static class RecipeSpecParser
 		if (!string.IsNullOrWhiteSpace(status))
 		{
 			s.Status = status.Trim();
+		}
+		string kind = GetStr(root, "kind");
+		if (!string.IsNullOrWhiteSpace(kind))
+		{
+			s.Kind = kind.Trim().ToLowerInvariant();
+		}
+		JsonElement script;
+		if (root.TryGetProperty("script", out script) && script.ValueKind == JsonValueKind.Object)
+		{
+			s.ScriptName = GetStr(script, "name");
+			s.ScriptPath = GetStr(script, "path");
+			s.ScriptSha256 = GetStr(script, "sha256");
 		}
 		int version;
 		if (TryGetInt(root, "version", out version))
@@ -220,6 +256,7 @@ public static class RecipeSpecParser
 					st.Raw = el3.Clone();
 					st.Member = GetStr(el3, "member");
 					st.On = GetStr(el3, "on");
+					st.SkipIfZero = GetStr(el3, "skipIfZero");
 					JsonElement a;
 					if (el3.TryGetProperty("args", out a) && a.ValueKind == JsonValueKind.Array)
 					{
@@ -327,6 +364,9 @@ public static class RecipeValidator
 	// $$ 是起始对象,不是 $N;这里只抓 "$数字"。
 	private static readonly Regex StepRefPattern = new Regex(@"\$(\d+)", RegexOptions.Compiled);
 
+	/// <summary>skipIfZero 的合法写法:恰好一个 "$N" 引用(允许前后空白)。</summary>
+	private static readonly Regex SkipIfZeroPattern = new Regex(@"^\s*\$\d+\s*$", RegexOptions.Compiled);
+
 	public static List<RecipeIssue> Validate(RecipeSpec r)
 	{
 		List<RecipeIssue> issues = new List<RecipeIssue>();
@@ -391,7 +431,26 @@ public static class RecipeValidator
 
 		if (r.Steps.Count == 0)
 		{
-			Add(issues, "error", "steps", "配方没有任何步骤。");
+			if (IsScriptKind(r))
+			{
+				// 壳式配方本来就没有声明式步骤:整段执行交给脚本通道,这里只要求脚本名存在。
+				if (string.IsNullOrWhiteSpace(r.ScriptName))
+				{
+					Add(issues, "error", "script.name", "kind=script 的配方必须声明 script.name(沙箱里的脚本名)。");
+				}
+				else if (!IsSafeName(r.ScriptName))
+				{
+					Add(issues, "error", "script.name", "script.name 非法:只允许字母/数字/下划线/短横线,长度 1~64。收到: \"" + r.ScriptName + "\"");
+				}
+			}
+			else
+			{
+				Add(issues, "error", "steps", "配方没有任何步骤。");
+			}
+		}
+		else if (IsScriptKind(r))
+		{
+			Add(issues, "warn", "steps", "kind=script 的配方不应声明 steps(声明了也不会执行,执行走脚本通道)。");
 		}
 		if (r.Steps.Count > MaxRecommendedSteps)
 		{
@@ -407,6 +466,11 @@ public static class RecipeValidator
 				Add(issues, "error", where, "缺少 member。");
 			}
 			CheckToken(issues, where + ".on", st.On, i + 1, declared, used);
+			CheckToken(issues, where + ".skipIfZero", st.SkipIfZero, i + 1, declared, used);
+			if (!string.IsNullOrWhiteSpace(st.SkipIfZero) && !SkipIfZeroPattern.IsMatch(st.SkipIfZero))
+			{
+				Add(issues, "error", where + ".skipIfZero", "格式应为 \"$N\"(引用一个前序步骤的返回值),当前是 \"" + st.SkipIfZero + "\"。");
+			}
 			if (st.Args != null)
 			{
 				for (int j = 0; j < st.Args.Length; j++)
@@ -421,15 +485,25 @@ public static class RecipeValidator
 			Add(issues, "error", "verification", "status=verified 必须提供 verification(建议 kind=snapshotDiff + name + expect=identical=true),否则\"已固化\"没有客观判据。");
 		}
 
-		foreach (InputSpec inp2 in r.Inputs)
+		// 壳式配方的 input 是给脚本 Main(args) 用的,不会出现在 steps 里,所以不能按"未引用"报 warn。
+		if (!IsScriptKind(r))
 		{
-			if (!string.IsNullOrWhiteSpace(inp2.Name) && !used.Contains(inp2.Name))
+			foreach (InputSpec inp2 in r.Inputs)
 			{
-				Add(issues, "warn", "inputs." + inp2.Name, "声明了但配方正文没有引用。");
+				if (!string.IsNullOrWhiteSpace(inp2.Name) && !used.Contains(inp2.Name))
+				{
+					Add(issues, "warn", "inputs." + inp2.Name, "声明了但配方正文没有引用。");
+				}
 			}
 		}
 
 		return issues;
+	}
+
+	/// <summary>是不是壳式(整段脚本)配方。</summary>
+	internal static bool IsScriptKind(RecipeSpec r)
+	{
+		return r != null && string.Equals(r.Kind, "script", StringComparison.OrdinalIgnoreCase);
 	}
 
 	/// <summary>校验一个 token 里的 {{input}} 引用与 $N 引用。stepNo 是本步的 1-based 序号。</summary>

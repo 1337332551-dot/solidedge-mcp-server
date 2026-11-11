@@ -12,11 +12,18 @@ namespace SolidEdge.Spy.McpServer.Tools;
 
 internal static class CaptureStore
 {
+	// 契约常量:LRU 配额只允许改这里(2026-10-25 审计:此前逻辑处用字面量,常量被架空,改常量不生效;
+	// "50 张/100MB/1500"同时活在常量/字面量/工具描述三处)
+	public const int MaxFiles = 50;
+
+	public const long MaxTotalBytes = 104857600L;
+
 	public const int InlineMaxEdge = 1500;
 
-	private const int MaxFiles = 50;
+	// 内嵌小图档位(2026-11-10 用户拍板:默认 ≤40KB JPEG,省 token;大图走落盘路径显式请求)
+	public const int InlineJpegMaxEdge = 1280;
 
-	private const long MaxTotalBytes = 104857600L;
+	public const long InlineJpegMaxBytes = 40960L;
 
 	private static string _lastHashHex;
 
@@ -94,7 +101,7 @@ internal static class CaptureStore
 			foreach (FileInfo item in list)
 			{
 				num2++;
-				if (num2 > 50 || num > 104857600)
+				if (num2 > MaxFiles || num > MaxTotalBytes)
 				{
 					num -= item.Length;
 					try
@@ -124,18 +131,83 @@ internal static class CaptureStore
 				return memoryStream.ToArray();
 			}
 		}
+		using (Bitmap bitmap2 = ScaleToMaxEdge(bitmap, maxEdge))
+		{
+			using MemoryStream memoryStream2 = new MemoryStream();
+			bitmap2.Save(memoryStream2, ImageFormat.Png);
+			return memoryStream2.ToArray();
+		}
+	}
+
+	/// <summary>
+	/// 内嵌小图 JPEG(2026-11-10):按 边长递减 × 质量递减 逐档压缩,首档命中 ≤maxBytes 即返回;
+	/// 最小档仍超限就如实返回最小档结果(调用方在 note 披露实际大小)。CAD 视口是线条图,
+	/// JPEG 高质量下体积可控,优先降边长再降质量。
+	/// </summary>
+	public static byte[] DownscaleToJpegBytes(string path, int maxEdge, long maxBytes)
+	{
+		int[] edges = new int[5] { maxEdge, 960, 720, 560, 480 };
+		long[] qualities = new long[4] { 80L, 65L, 50L, 40L };
+		byte[] last = null;
+		using (Bitmap source = new Bitmap(path))
+		{
+			foreach (int edge in edges)
+			{
+				using (Bitmap scaled = ScaleToMaxEdge(source, edge))
+				{
+					foreach (long q in qualities)
+					{
+						byte[] bytes = EncodeJpeg(scaled, q);
+						if (bytes.Length <= maxBytes)
+						{
+							return bytes;
+						}
+						last = bytes;
+					}
+				}
+			}
+		}
+		return last;
+	}
+
+	private static Bitmap ScaleToMaxEdge(Bitmap source, int maxEdge)
+	{
+		int num = Math.Max(source.Width, source.Height);
+		if (num <= maxEdge)
+		{
+			return new Bitmap(source);
+		}
 		double num2 = (double)maxEdge / (double)num;
-		int width = Math.Max(1, (int)Math.Round((double)bitmap.Width * num2));
-		int height = Math.Max(1, (int)Math.Round((double)bitmap.Height * num2));
-		using Bitmap bitmap2 = new Bitmap(width, height);
-		using Graphics graphics = Graphics.FromImage(bitmap2);
-		graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-		graphics.SmoothingMode = SmoothingMode.HighQuality;
-		graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-		graphics.DrawImage(bitmap, new Rectangle(0, 0, width, height));
-		using MemoryStream memoryStream2 = new MemoryStream();
-		bitmap2.Save(memoryStream2, ImageFormat.Png);
-		return memoryStream2.ToArray();
+		int width = Math.Max(1, (int)Math.Round((double)source.Width * num2));
+		int height = Math.Max(1, (int)Math.Round((double)source.Height * num2));
+		Bitmap bitmap = new Bitmap(width, height);
+		using (Graphics graphics = Graphics.FromImage(bitmap))
+		{
+			graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+			graphics.SmoothingMode = SmoothingMode.HighQuality;
+			graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+			graphics.DrawImage(source, new Rectangle(0, 0, width, height));
+		}
+		return bitmap;
+	}
+
+	private static byte[] EncodeJpeg(Bitmap image, long quality)
+	{
+		ImageCodecInfo encoder = null;
+		ImageCodecInfo[] imageEncoders = ImageCodecInfo.GetImageEncoders();
+		foreach (ImageCodecInfo imageCodecInfo in imageEncoders)
+		{
+			if (imageCodecInfo.FormatID == ImageFormat.Jpeg.Guid)
+			{
+				encoder = imageCodecInfo;
+				break;
+			}
+		}
+		using EncoderParameters encoderParameters = new EncoderParameters(1);
+		encoderParameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
+		using MemoryStream memoryStream = new MemoryStream();
+		image.Save(memoryStream, encoder, encoderParameters);
+		return memoryStream.ToArray();
 	}
 
 	private static string HashFile(string path)

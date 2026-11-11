@@ -18,7 +18,10 @@ public static class SelectionTools
 	private static int _typeLibsLoaded;
 
 	[McpServerTool]
-	[Description("获取用户在 Solid Edge 中当前选中的对象列表。用户说\"查SE\"\"用se查\"\"看看选了什么\"\"我选中了什么\"等需查询当前选中对象时,优先调用此工具获取对象编号;若 AI 在处理任务中需访问 Solid Edge 当前选中对象,也应调用此工具。会清空之前的句柄表,为每个选中对象分配编号(obj-1, obj-2...),返回类型和名称。若选择集为空但存在活动文档,则回退把 ActiveDocument 登记为 obj-1(结果带 fallback=\"ActiveDocument\" 标记),AI 可从文档层(Variables/Properties/特征集合)继续 invoke 查询材质、重量、变量表、特征树等,无需用户先选中;若需操作具体几何/特征对象,仍请用户在 SE 中选中后再调用本工具。调用后若需路径/详情,再调 se_find_paths 或 se_describe_object;后续调用必须在同一 MCP 会话进程内连续完成——不要改用命令行 exe 查询,CLI 每次是独立进程,句柄表不共享。单位约定:Solid Edge API 返回的长度/距离/坐标值为内部单位米(m),UI 通常显示毫米(mm),换算 ×1000;角度为弧度。")]
+	[Description("获取用户在 Solid Edge 中当前选中的对象列表,清空旧句柄表并为每个对象分配 obj-1/obj-2…,返回类型与名称。" +
+		"用户说\"查SE\"\"看看选了什么\"时优先用它。选择集为空但有活动文档时回退把 ActiveDocument 登记为 obj-1" +
+		"(结果带 fallback=\"ActiveDocument\"),可从文档层(Variables/Properties/特征集合)继续查询。后续调用必须在同一 MCP 会话进程内完成——" +
+		"不要改用 CLI,CLI 每次独立进程、句柄表不共享。单位:API 长度/坐标=米(UI 毫米 ×1000),角度=弧度。")]
 	public static string se_get_selection(SolidEdgeContext context)
 	{
 		try
@@ -32,6 +35,11 @@ public static class SelectionTools
 					return Error("无法获取 ActiveSelectSet。");
 				}
 				int num = SafeGetCount(obj);
+				if (num < 0)
+				{
+					// P3-2a:Count 读不到 → 如实报错,不回退 ActiveDocument、不给假 0(避免 AI 把读失败当"选择集为空")
+					return Error("ActiveSelectSet.Count 读不到,无法判断选择集状态(不回退、不猜)。可重试一次;仍失败则检查 Solid Edge 状态。");
+				}
 				if (num == 0)
 				{
 					context.ClearHandles();
@@ -152,11 +160,12 @@ public static class SelectionTools
 		try
 		{
 			object obj = collection.GetType().InvokeMember("Count", BindingFlags.GetProperty, null, collection, null);
-			return (obj is int) ? ((int)obj) : 0;
+			return Convert.ToInt32(obj, CultureInfo.InvariantCulture);
 		}
 		catch
 		{
-			return 0;
+			// P3-2a:读不到 Count 返回 -1(调用方如实报错),不再给假 0(0 会被当成"选择集为空")
+			return -1;
 		}
 	}
 
@@ -182,7 +191,10 @@ public static class SelectionTools
 	}
 
 	[McpServerTool]
-	[Description("查找对象在 Solid Edge 对象模型中的访问路径,返回从 Application 出发的可达路径(如 'Application.ActiveDocument.Sheets.Item(\"39339\").Lines2d.Item(12)'),可直接写进程序代码。同一对象可能有多条可达路径,全部列出。两种用法二选一:①传 objectId=查选中对象(se_get_selection 返回的 obj-N);②传 name=按对象 Name/Key 全局反查(如 name=\"38400\"、name=\"Dimension 38102\"),不需要用户选中——适用于'知道名字不知道挂在哪'的场景(如数字名的视图编辑上下文 sheet)。单位约定:SE 内部长度单位为米(UI 显示 mm,×1000)。")]
+	[Description("查找对象在 Solid Edge 对象模型中的访问路径,返回从 Application 出发的可达路径" +
+		"(如 'Application.ActiveDocument.Sheets.Item(\"39339\").Lines2d.Item(12)'),可直接写进代码。" +
+		"两种用法二选一:①objectId=查选中对象(obj-N)②name=按 Name/Key 全局反查(如 \"38400\"),不需要用户选中。" +
+		"最多列 10 条(先到先得)。单位:SE 内部长度=米(UI 毫米 ×1000)。")]
 	public static string se_find_paths(SolidEdgeContext context, [Description("对象编号,如 obj-1(se_get_selection 返回);与 name 二选一")] string objectId = null, [Description("按对象 Name/Key 全局反查路径,如 \"38400\" 或 \"Circle2d 38400\";与 objectId 二选一")] string name = null)
 	{
 		try
@@ -235,7 +247,7 @@ public static class SelectionTools
 						paths = listByName,
 						truncated = objectExplorer.TimedOut,
 						hint = (listByName.Count == 0
-							? "未找到 Name/Key 等于该名字的对象。注意名字区分大小写不敏感但需完全相等;模糊查找可去掉前后缀重试(如只传数字部分)。"
+							? "未找到匹配该名字的对象。注意名字匹配大小写不敏感,且名字长度≥3 时为包含匹配(子串命中也算);未命中可改传更短或更精确的子串重试。"
 							: (objectExplorer.TimedOut ? "已找到路径,但遍历超时提前停止,可能还有更多路径未列出。" : null))
 					});
 				}
@@ -311,8 +323,14 @@ public static class SelectionTools
 	}
 
 	[McpServerTool]
-	[Description("详细描述选中对象(obj-N):列出它实现的全部接口/类、所有属性(含当前实时值)、所有方法(含签名)。同一 COM 对象可能实现多个接口,每个接口的成员都分别列出。属性除 name/type/value 外附:readable(本次是否读到值)、enumType/enumConstant(VT_USERDEFINED 裸数字翻译成的枚举类型名与常量名;没匹配到常量时 enumType 仍会给出)、unitNote(长度类附毫米、角度类附度)。readable=false 的属性读它会抛异常,名字见 unreadableProperties,不要反复尝试。方法列表已过滤 AddRef/Release/QueryInterface/GetIDsOfNames/GetTypeInfo/GetTypeInfoCount/Invoke 等 IDispatch 底层方法。注意:数值均为 SE 内部单位——长度米(UI 显示 mm,×1000)、角度弧度;枚举并非全部可解码,enumConstant 为 null 时请查离线 SDK 文档,不要猜。")]
-	public static string se_describe_object(SolidEdgeContext context, [Description("对象编号,如 obj-1")] string objectId, [Description("可选,\"summary\"=精简模式:只返回可读属性(最多 60 个,仅 name/type/value)+方法名列表,适合先概览再下钻;默认 \"full\"=全量(含 readable/enumType/enumConstant/unitNote 与完整方法签名)")] string mode = null)
+	[Description("详细描述选中对象(obj-N):列出实现的全部接口、所有属性(含实时值)、所有方法(含签名),每个接口分别列。属性除 name/type/value 外附:" +
+		"readable(本次是否读到)、writable(能否写;false=只读,如 Pattern.NumberOfOccurrences;null=未知)、" +
+		"enumType/enumConstant(VT_USERDEFINED 裸数字翻译)、unitNote(长度附 mm、角度附度)。" +
+		"readable=false 的读它会抛异常,名字见 unreadableProperties,别反复试。方法已过滤 AddRef/Release/QueryInterface 等 IDispatch 底层方法。" +
+		"数值为 SE 内部单位:长度米(UI 毫米 ×1000)、角度弧度;enumConstant 为 null 时查 SDK 文档,不要猜。\n" +
+			"分工:跨多对象读同名成员用 se_batch_read;只看树结构(子集合/子对象名单)用 se_walk_object。")]
+	public static string se_describe_object(SolidEdgeContext context, [Description("对象编号,如 obj-1")] string objectId, [Description("可选,summary=精简模式:只返回可读属性(最多 60 个,仅 name/type/value)+方法名列表,适合先概览再下钻;" +
+		"默认 full=全量(含 readable/enumType/enumConstant/unitNote 与完整方法签名)")] string mode = null)
 	{
 		try
 		{
@@ -458,6 +476,12 @@ public static class SelectionTools
 			string enumConstant = null;
 			string unitNote = null;
 			bool readable = false;
+			// writable:2026-10-25 新增。判据是类型库里的 INVOKEKIND——只有 PROPERTYGET 没有 PUT/PUTREF
+			// 就是只读(如 Pattern.NumberOfOccurrences,写它编译期直接 CS0200)。
+			// 拿不到元数据时留 null(unknown),不猜。
+			bool? writable = null;
+			try { writable = !comPropertyInfo.IsReadOnly; }
+			catch { writable = null; }
 			try
 			{
 				object value = target.GetType().InvokeMember(name, BindingFlags.InvokeMethod | BindingFlags.GetProperty, null, target, null);
@@ -490,6 +514,7 @@ public static class SelectionTools
 					type = type,
 					value = text,
 					readable = readable,
+					writable = writable,
 					enumType = enumType,
 					enumConstant = enumConstant,
 					unitNote = unitNote

@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using SolidEdge.Spy.EventMcp.Command;
 using SolidEdge.Spy.InteropServices;
 using SolidEdge.Spy.McpServer.Telemetry;
 using SolidEdgeFramework;
@@ -20,7 +22,7 @@ namespace SolidEdge.Spy.EventMcp
     /// 与执行 MCP(solidedge-mcp)分工:
     /// - 执行 MCP:出站 COM 调用(查询/执行),BlockingCollection 式 STA,无消息泵;
     /// - 本 server:入站 COM 事件(Advise 常驻订阅),STA 消息泵收回调,
-    ///   事件入环形缓冲,3 个工具供 AI 增量轮询。
+    ///   事件入环形缓冲,4 个工具供 AI 增量轮询。
     /// 两者独立进程、互不依赖,可各自重启。
     ///
     /// 无参数:MCP stdio 模式;--listen [秒]:CLI 自测模式(事件实时打印 JSON 行)。
@@ -66,7 +68,9 @@ namespace SolidEdge.Spy.EventMcp
                     new SolidEdge.Spy.McpServer.Telemetry.JsonRpcTap(Console.OpenStandardOutput(), isRequestSide: false, source: "event"))
                 .WithToolsFromAssembly();
 
-            builder.Services.AddSingleton<EventHub>();
+            // 台账写入权归独立命令助手应用(solidedge-command-assistant.exe):
+            // 双进程都 Advise SE 事件接口(多播无害),但台账若两边都写会双份记录。
+            builder.Services.AddSingleton<EventHub>(_ => new EventHub(enableLedger: false));
 
             var host = builder.Build();
 
@@ -101,6 +105,11 @@ namespace SolidEdge.Spy.EventMcp
             if (args[0].Equals("--cleanup", StringComparison.OrdinalIgnoreCase))
             {
                 return RunCleanup();
+            }
+
+            if (args[0].Equals("--ledger", StringComparison.OrdinalIgnoreCase))
+            {
+                return RunLedgerCli(args);
             }
 
             if (!args[0].Equals("--listen", StringComparison.OrdinalIgnoreCase))
@@ -243,14 +252,68 @@ namespace SolidEdge.Spy.EventMcp
             return code;
         }
 
+        // ---------------- 命令助手台账 CLI(--ledger) ----------------
+
+        /// <summary>
+        /// 打印台账(--ledger [条数]):验收 P0/P1 用 —— 不开浮窗也能确认"命令/事件有没有记上、名字反解没有"。
+        /// </summary>
+        private static int RunLedgerCli(string[] args)
+        {
+            int count = 30;
+            if (args.Length > 1 && !int.TryParse(args[1], out count))
+            {
+                Console.WriteLine("条数解析失败: " + args[1]);
+                return 1;
+            }
+
+            var ledger = new CommandLedger();
+            ledger.Load();
+            LedgerEntry[] all = ledger.SnapshotAll();
+
+            int commandTotal = 0;
+            foreach (LedgerEntry e in all)
+            {
+                if (e.Kind == "Command") commandTotal++;
+            }
+
+            Console.WriteLine("=== Solid Edge 命令台账 ===");
+            Console.WriteLine("文件: " + ledger.FilePath);
+            Console.WriteLine("总数: " + commandTotal + " 条命令 / " + all.Length + " 条事件");
+            Console.WriteLine();
+
+            int take = Math.Min(count <= 0 ? 30 : count, all.Length);
+            Console.WriteLine("--- 最近 " + take + " 条(旧→新) ---");
+            for (int i = all.Length - take; i < all.Length; i++)
+            {
+                LedgerEntry e = all[i];
+                string what;
+                if (e.Kind == "Command")
+                {
+                    what = "命令 " + (string.IsNullOrEmpty(e.CommandName)
+                        ? ("#" + e.CommandId)
+                        : CommandNameMap.Translate(e.CommandName));
+                }
+                else
+                {
+                    what = e.Kind + (string.IsNullOrEmpty(e.Detail) ? "" : " " + e.Detail);
+                }
+                Console.WriteLine(" " + e.Time.ToString("MM-dd HH:mm:ss") + "  " +
+                    (e.Environment ?? "?").PadRight(12) + "  " + what);
+            }
+            return 0;
+        }
+
         private static void PrintUsage()
         {
             Console.WriteLine("用法:");
-            Console.WriteLine("  solidedge-event-mcp.exe                MCP server 模式(stdio,由 AI 客户端拉起)");
+            Console.WriteLine("  solidedge-event-mcp.exe                MCP server 模式(stdio,由 AI 客户端拉起;不写台账、不弹浮窗)");
             Console.WriteLine("  solidedge-event-mcp.exe --listen [秒]  CLI 自测模式(默认 60 秒;0=持续,Ctrl+C 退出)");
+            Console.WriteLine("  solidedge-event-mcp.exe --ledger [N]   打印台账最近 N 条(默认 30)与命令总数(纯读诊断)");
             Console.WriteLine("  solidedge-event-mcp.exe --cleanup      清理僵尸事件订阅(修 SE 弹窗卡死,如另存为)");
             Console.WriteLine("  solidedge-event-mcp.exe --version      打印构建时间戳");
             Console.WriteLine("  solidedge-event-mcp.exe --help         本帮助");
+            Console.WriteLine();
+            Console.WriteLine("命令助手浮窗(台账+推荐+一键执行)已拆为独立应用: solidedge-command-assistant.exe");
         }
     }
 }

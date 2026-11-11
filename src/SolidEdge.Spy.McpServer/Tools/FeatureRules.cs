@@ -56,6 +56,8 @@ namespace SolidEdge.Spy.McpServer.Tools
 
                 // ---- 扩 op(2026-09-23 P1):hole ----
                 new HoleRule(),               // E409 hole 形状只接受圆 / mode 非法 / finite 缺 depth
+                new BoltCircleRule(),         // E431/E432/W431 boltcircle 缺 count·boltdia / 角度共线 / angles 被忽略
+                new PolarHoleRule(),          // E419 polarhole 极坐标定位孔(boltdia + angleDeg/angles,全约束定位)
 
                 // ---- 扩 op(2026-09-23 P2):loft / sweep / helix ----
                 new LoftRule(),               // E410 loft 多轮廓声明(profiles 数量/形状/plane)
@@ -67,16 +69,32 @@ namespace SolidEdge.Spy.McpServer.Tools
                 new SplitRule(),              // E414 split target(@别名/obj-K)
                 new WebNetworkRule(),         // E415 web_network thickness/depth > 0
                 new ThickenRule(),            // E416 thicken thickness > 0
-                new DeleteFaceRule()           // E417 delete_face confirm 必须 true
+                new DeleteFaceRule(),          // E417 delete_face confirm 必须 true
+                new Curve3DRule(),             // E420 spline3d/arc3d 点列与圆弧几何自洽(2026-11-02)
+                new BluesurfRule(),           // E421 bluesurf edgeOf 引用 + edges 整数对(2026-11-09)
+                new ReplaceOfRule()            // W433 replaceOf 传给不支持重建删除的 op(2026-11-06)
             };
         }
     }
 
     // ==================== 结构层 ====================
 
-    /// <summary>E101:op 必须是 plane / extrude / cut / revolve / fillet / chamfer / rib / pattern / hole / loft / sweep / helix。</summary>
+    /// <summary>E101:op 必须是 Allowed 里的名字。</summary>
     public sealed class OpRule : IFeatureRule
     {
+        /// <summary>
+        /// 全部合法 op。新增 op 只改这一处:E101 报错文案、返回的 fix.allowed、
+        /// 以及 OpManual 的一致性单测都引用本表,三边不会漂移。
+        /// </summary>
+        public static readonly string[] Allowed =
+        {
+            "plane", "extrude", "cut", "revolve", "fillet", "chamfer", "rib", "pattern",
+            "hole", "polarhole", "boltcircle", "loft", "sweep", "helix",
+            "draft", "split", "web_network", "extrude_surface", "loft_surface", "thicken", "delete_face",
+            "spline3d", "arc3d",  // 2026-11-02:3D 曲线(不计入实体特征,只往 3D 草图里加曲线)
+            "bluesurf"            // 2026-11-09:蓝面补面(实体边截面,真机配方打通,见 OpManual 条目)
+        };
+
         public string Code { get { return "E101"; } }
         public Severity DefaultLevel { get { return Severity.Error; } }
         public string[] AppliesTo { get { return new[] { "*" }; } }
@@ -84,16 +102,12 @@ namespace SolidEdge.Spy.McpServer.Tools
         public IEnumerable<Issue> Check(ValidationContext ctx)
         {
             var s = ctx.Current;
-            if (s.OpLower == "plane" || s.OpLower == "extrude" || s.OpLower == "cut" || s.OpLower == "revolve" ||
-                s.OpLower == "fillet" || s.OpLower == "chamfer" || s.OpLower == "rib" || s.OpLower == "pattern" ||
-                s.OpLower == "hole" || s.OpLower == "loft" || s.OpLower == "sweep" || s.OpLower == "helix" ||
-                s.OpLower == "draft" || s.OpLower == "split" || s.OpLower == "web_network" ||
-                s.OpLower == "extrude_surface" || s.OpLower == "thicken" || s.OpLower == "delete_face")
+            if (Array.IndexOf(Allowed, s.OpLower) >= 0)
                 yield break;
 
             yield return ctx.Error("E101", "op",
-                "未知 op \"" + s.Op + "\",仅支持 plane / extrude / cut / revolve / fillet / chamfer / rib / pattern / hole / loft / sweep / helix / draft / split / web_network / extrude_surface / thicken / delete_face。",
-                new { action = "set", field = "op", allowed = new[] { "plane", "extrude", "cut", "revolve", "fillet", "chamfer", "rib", "pattern", "hole", "loft", "sweep", "helix", "draft", "split", "web_network", "extrude_surface", "thicken", "delete_face" } });
+                "未知 op \"" + s.Op + "\",仅支持 " + string.Join(" / ", Allowed) + "。",
+                new { action = "set", field = "op", allowed = Allowed });
         }
     }
 
@@ -107,7 +121,7 @@ namespace SolidEdge.Spy.McpServer.Tools
         public IEnumerable<Issue> Check(ValidationContext ctx)
         {
             var s = ctx.Current;
-            if (s.HasCircle || s.HasCircles || s.HasSlot) yield break;
+            if (s.HasCircle || s.HasCircles || s.HasSlot || s.HasSpline) yield break;
             if (s.ShapeError == null) yield break;
 
             // 2026-09-30 v2.1:去掉与 ShapeError 重复的六形状罗列,改为给可复制的正确写法
@@ -115,7 +129,7 @@ namespace SolidEdge.Spy.McpServer.Tools
             // field 名保持 "shape" 不改——E409/E412 等 5 处一致使用,单改此处会制造跨规则不一致。
             yield return ctx.Error("E102", "shape", s.ShapeError +
                 " 形状键平铺在特征对象顶层(无 shape 包装),如 \"rect\":[[0,0],[0.1,0.1]]。",
-                new { action = "provide", field = "shape", oneOf = new[] { "circle", "circles", "slot", "rect", "polygon", "loops" } });
+                new { action = "provide", field = "shape", oneOf = new[] { "circle", "circles", "slot", "spline", "rect", "polygon", "loops" } });
         }
     }
 
@@ -170,6 +184,79 @@ namespace SolidEdge.Spy.McpServer.Tools
                 yield return ctx.Error("E403", "angle",
                     "旋转角超过一整圈(2π 弧度 / 360 度)。",
                     new { action = "clamp", field = "angle", max = 6.283185307179586 });
+            }
+        }
+    }
+
+    /// <summary>
+    /// E431 / E432 / W431:boltcircle(种子孔 + 圆周阵列)的参数校验。
+    ///
+    /// 这个 op 存在的意义就是"孔数天生可改",所以 count 必须显式给且 >= 2;
+    /// 反过来,若调用方还传了 polarhole 的 angles[](按角度建 N 个独立孔),
+    /// 本 op 会忽略它——必须提示,否则会出现"我给了 angles 却没按角度建"的困惑。
+    /// 起始角 0°/180° 与角度基准线共线、定位尺寸退化(polarhole 实测直接拒),这里提前拦。
+    /// 错误码单开 E431/E432/W431(polarhole 已占用 E419/W419,不复用)。
+    /// </summary>
+    public sealed class BoltCircleRule : IFeatureRule
+    {
+        public string Code { get { return "E431"; } }
+        public Severity DefaultLevel { get { return Severity.Error; } }
+        public string[] AppliesTo { get { return new[] { "boltcircle" }; } }
+
+        public IEnumerable<Issue> Check(ValidationContext ctx)
+        {
+            var s = ctx.Current;
+
+            if (!s.PatCount.HasValue)
+            {
+                yield return ctx.Error("E431", "count",
+                    "boltcircle 必须给 count(孔数,含种子孔,>= 2)。例:\"count\":8。",
+                    new { action = "set", field = "count", example = 8 });
+            }
+            else if (s.PatCount.Value < 2)
+            {
+                yield return ctx.Error("E431", "count",
+                    "boltcircle 的 count=" + s.PatCount.Value + " 无效:圆周阵列实例数(含种子)必须 >= 2。",
+                    new { action = "set", field = "count", minimum = 2 });
+            }
+
+            if (!(s.BoltDia > 0))
+            {
+                yield return ctx.Error("E431", "boltdia",
+                    "boltcircle 必须给 boltdia(螺栓分布圆直径,单位米)。例:Ø182 分布圆写 \"boltdia\":0.182。",
+                    new { action = "set", field = "boltdia", example = 0.182, note = "单位是米,不要写 182" });
+            }
+            else if (s.BoltDia.Value > 5)
+            {
+                yield return ctx.Error("E431", "boltdia",
+                    "boltdia=" + s.BoltDia.Value + " 疑似把毫米当米了:单位是米,Ø182 应写 0.182。",
+                    new { action = "set", field = "boltdia", example = 0.182 });
+            }
+
+            if (!(s.Diameter > 0) && string.IsNullOrWhiteSpace(s.Thread))
+            {
+                yield return ctx.Error("E432", "diameter",
+                    "boltcircle 需要 diameter(孔径,米)或 thread(螺纹规格,如 M10);两者都给时 diameter 会被忽略。",
+                    new { action = "provide", field = "diameter | thread", example = 0.018 });
+            }
+
+            if (s.AnglesDeg != null && s.AnglesDeg.Count > 0)
+            {
+                yield return ctx.Warn("W431", "angles",
+                    "boltcircle 会忽略 angles[](共 " + s.AnglesDeg.Count + " 个角度):本 op 固定建【1 个种子孔 + 1 个圆周阵列】,"
+                    + "孔位由 boltdia + 起始角 + 均布间距决定。要按任意角度布置独立孔,请改用 op=polarhole 的 angles[]"
+                    + "(注意那样孔数不可改)。",
+                    new { action = "remove", field = "angles", or = "改用 op=polarhole" });
+            }
+
+            double start = s.StartAngleDeg ?? (s.PatCount.HasValue && s.PatCount.Value > 0 ? 360.0 / s.PatCount.Value / 2.0 : 22.5);
+            double norm = ((start % 360.0) + 360.0) % 360.0;
+            if (Math.Abs(norm) < 1e-9 || Math.Abs(norm - 180.0) < 1e-9)
+            {
+                yield return ctx.Error("E432", "angleDeg",
+                    "起始角 " + start + "° 与角度基准线(0°/180°)共线:定位线的角度标注会退化,polarhole 实测直接拒绝。"
+                    + "请错开至少 0.1°(标准画法是取半个齿距,如 8 孔用 22.5°)。",
+                    new { action = "set", field = "angleDeg", suggested = Math.Round(360.0 / Math.Max(2, s.PatCount ?? 8) / 2.0, 4) });
             }
         }
     }
@@ -551,7 +638,8 @@ namespace SolidEdge.Spy.McpServer.Tools
             if (string.IsNullOrWhiteSpace(ref_))
             {
                 yield return ctx.Error("E201", field,
-                    "缺少 \"" + field + "\" 平面引用(支持 RefPlane_1/2/3、@别名、obj-K、face:<ID>/face:±Z)。",
+                    "缺少 \"" + field + "\" 平面引用(支持 RefPlane_1/2/3、@别名、obj-K、face:<ID>、face:±Z、" +
+                    "face:±A:outer|inner、face:±A:@x,y,z)。",
                     new { action = "provide", field = field });
                 yield break;
             }
@@ -567,15 +655,17 @@ namespace SolidEdge.Spy.McpServer.Tools
                 if (fp != null && fp.ParseError != null)
                 {
                     yield return ctx.Error("E203", field, fp.ParseError,
-                        new { action = "set", field = field, example = "face:26 / face:+Z" });
+                        new { action = "set", field = field,
+                              example = "face:26 / face:+Z / face:+Z:outer / face:+Z:@0,0,0.5" });
                     yield break;
                 }
                 // 面锚定目前只有 extrude/cut/hole 三个 op 实现了世界坐标→面局部投影,
                 // 其余 op(rib/draft/helix/pattern/...)静态拦下,别留到执行层才炸。
-                if (s.OpLower != "extrude" && s.OpLower != "cut" && s.OpLower != "hole")
+                if (s.OpLower != "extrude" && s.OpLower != "cut" && s.OpLower != "hole" && s.OpLower != "polarhole")
                 {
                     yield return ctx.Error("E203", field,
-                        "face:<ID>/face:±Z 面锚定目前只支持 extrude / cut / hole(收到 op=\"" + s.Op + "\")。",
+                        "face:<ID> / face:±Z[:outer|:inner] / face:±A:@x,y,z 面锚定目前只支持 extrude / cut / hole / polarhole" +
+                        "(收到 op=\"" + s.Op + "\")。",
                         new { action = "set", field = field, example = "RefPlane_1" });
                 }
                 yield break;
@@ -819,16 +909,22 @@ namespace SolidEdge.Spy.McpServer.Tools
     {
         public string Code { get { return "E401"; } }
         public Severity DefaultLevel { get { return Severity.Error; } }
-        public string[] AppliesTo { get { return new[] { "cut", "hole", "revolve", "loft", "sweep", "helix" }; } }
+        public string[] AppliesTo { get { return new[] { "cut", "hole", "polarhole", "boltcircle", "revolve", "loft", "sweep", "helix" }; } }
 
         public IEnumerable<Issue> Check(ValidationContext ctx)
         {
             var s = ctx.Current;
 
-            // 除料语义:cut/hole 天然是;revolve/loft/sweep/helix 要 mode=="cut" 才算
-            bool cutLike = s.OpLower == "cut" || s.OpLower == "hole" ||
+            // 除料语义:cut/hole/boltcircle 天然是;revolve/loft/sweep/helix 要 mode=="cut" 才算
+            bool cutLike = s.OpLower == "cut" || s.OpLower == "hole" || s.OpLower == "polarhole"
+                || s.OpLower == "boltcircle" ||
                 string.Equals(s.Mode, "cut", StringComparison.OrdinalIgnoreCase);
             if (!cutLike) yield break;
+
+            // 2026-10-23:目标文档里已经有实体(增量建模,如"在已有底板上打 4 个孔")时,
+            // 本批第一个特征就是除料是完全合法的。这一点校验器看不到(它不碰 COM),
+            // 只能由调用方传 assumeStock=true 声明。
+            if (ctx.AssumeStock) yield break;
 
             for (int i = 0; i < ctx.Index; i++)
             {
@@ -836,8 +932,9 @@ namespace SolidEdge.Spy.McpServer.Tools
             }
 
             yield return ctx.Error("E401", "op",
-                "除料前必须先建实体——当前特征之前没有任何增材特征(extrude/rib 或 revolve/loft/sweep/helix 凸台)。",
-                new { action = "insert_extrude_before", beforeFeature = ctx.Index });
+                "除料前必须先建实体——当前特征之前没有任何增材特征(extrude/rib 或 revolve/loft/sweep/helix 凸台)。" +
+                "若目标文档里已有实体(增量建模),传 assumeStock=true 即可放行。",
+                new { action = "insert_extrude_before_or_set_assumeStock", beforeFeature = ctx.Index, assumeStock = true });
         }
 
         /// <summary>该特征是否给模型加料:extrude/rib 恒是;四类旋转/多轮廓 op 取决于 mode 是否 "cut"。</summary>
@@ -892,12 +989,12 @@ namespace SolidEdge.Spy.McpServer.Tools
     {
         public string Code { get { return "W402"; } }
         public Severity DefaultLevel { get { return Severity.Warning; } }
-        public string[] AppliesTo { get { return new[] { "extrude", "cut", "hole" }; } }
+        public string[] AppliesTo { get { return new[] { "extrude", "cut", "hole", "polarhole" }; } }
 
         public IEnumerable<Issue> Check(ValidationContext ctx)
         {
             var s = ctx.Current;
-            int side = s.Side ?? ((s.OpLower == "cut" || s.OpLower == "hole") ? 1 : 2);
+            int side = s.Side ?? ((s.OpLower == "cut" || s.OpLower == "hole" || s.OpLower == "polarhole") ? 1 : 2);
 
             if (side < 1 || side > 3)
             {
@@ -930,7 +1027,7 @@ namespace SolidEdge.Spy.McpServer.Tools
     {
         public string Code { get { return "W409"; } }
         public Severity DefaultLevel { get { return Severity.Warning; } }
-        public string[] AppliesTo { get { return new[] { "extrude", "cut", "hole" }; } }
+        public string[] AppliesTo { get { return new[] { "extrude", "cut", "hole", "polarhole" }; } }
 
         public IEnumerable<Issue> Check(ValidationContext ctx)
         {
@@ -1070,14 +1167,68 @@ namespace SolidEdge.Spy.McpServer.Tools
             }
 
             bool round = s.HasCircle || s.HasCircles;
-            if (!round)
+            bool isThread = !string.IsNullOrWhiteSpace(s.Thread);
+            // 2026-10-24 标准定位:boltdia(分布圆Ø+角度)也是合法孔位声明
+            bool hasBoltCircle = s.BoltDia.HasValue && s.BoltDia.Value > 0;
+
+            if (hasBoltCircle)
+            {
+                // 标准定位模式下孔位由 分布圆Ø+angleDeg 表达,center/circles 不参与
+                if (round || s.Center != null)
+                    yield return ctx.Warn("W409", "boltdia",
+                        "boltdia(标准定位)与 center/circles 同时给出:孔位以 分布圆Ø+angleDeg 为准,坐标声明被忽略。", null);
+                if (s.BoltDia.Value > 5)
+                    yield return ctx.Error("E409", "boltdia",
+                        "boltdia 是【直径】且单位米——当前值 " + GeoUtil.Fmt(s.BoltDia.Value) +
+                        " 疑似把 mm 当 m(>5m)。",
+                        new { action = "set", field = "boltdia", unit = "m" });
+            }
+
+            // 2026-10-23:螺纹孔——规格查得到(底孔/小径/螺距自动带出)就等价于"有直径",
+            // 不再强制要求直径;但孔位还是必须给。
+            if (isThread)
+            {
+                ThreadRow row;
+                string lookupError;
+                if (!HoleThreadTable.TryFind(s.Standard, s.Thread, out row, out lookupError))
+                {
+                    yield return ctx.Error("E409", "thread", lookupError,
+                        new { action = "set", field = "thread", examples = new[] { "M10", "M10x1.25", "Rp1/2" } });
+                }
+                else
+                {
+                    string opt = (s.ThreadOption ?? "").Trim().ToLowerInvariant();
+                    if (opt.Length > 0 && opt != "minor" && opt != "tapdrill" && opt != "tap_drill" && opt != "nominal")
+                        yield return ctx.Error("E409", "threadoption",
+                            "threadoption 只能是 minor(默认,内螺纹小径)/ tapdrill(丝锥直径)/ nominal(标称直径),收到 \"" + s.ThreadOption + "\"。",
+                            new { action = "set", field = "threadoption", allowed = new[] { "minor", "tapdrill", "nominal" } });
+
+                    if (s.Diameter.HasValue)
+                        yield return ctx.Warn("W409", "diameter",
+                            "螺纹孔的 diameter 会被忽略:实际孔径按螺纹规格走(" + row.Describe() + ",当前选项 " +
+                            ThreadRow.OptionName(s.ThreadOption) + ")。", null);
+
+                    if (row.Kind == 3)
+                        yield return ctx.Warn("W409", "thread",
+                            "锥管螺纹(" + row.Size + ")建出来是【圆柱底孔】Ø" + GeoUtil.Fmt(row.DrillMm) +
+                            "mm,不是锥孔——SE 的锥孔要走 AddSync 专用通道。", null);
+                }
+
+                if (!round && !hasBoltCircle)
+                {
+                    yield return ctx.Error("E409", "shape",
+                        "螺纹孔还要给孔位:circle / circles(可只写 [x,y])/ center,或标准定位 boltdia(+angleDeg)。",
+                        new { action = "provide", field = "shape", oneOf = new[] { "circle", "circles", "center", "boltdia" } });
+                }
+            }
+            else if (!round && !hasBoltCircle)
             {
                 yield return ctx.Error("E409", "shape",
                     string.IsNullOrEmpty(s.ShapeError)
-                        ? "hole 需要 circle/circles 或 center+diameter(孔是圆的);非圆异形孔请用 cut。"
+                        ? "hole 需要 circle/circles、center+diameter,或标准定位 boltdia(+angleDeg);非圆异形孔请用 cut。螺纹孔请加成 thread:\"M10\"。"
                         : s.ShapeError + "(hole 只接受圆孔;异形孔请用 cut)",
                     new { action = "provide", field = "shape",
-                          oneOf = new[] { "circle", "circles", "center+diameter" } });
+                          oneOf = new[] { "circle", "circles", "center+diameter", "thread", "boltdia" } });
                 yield break;
             }
 
@@ -1102,6 +1253,107 @@ namespace SolidEdge.Spy.McpServer.Tools
         }
     }
 
+    /// <summary>
+    /// E419:polarhole(极坐标定位孔,2026-10-25)的参数校验。
+    /// 定位 = 分布圆直径 boltdia + 角度(angleDeg 单孔 / angles 多孔,每角度一个独立 Hole 特征);
+    /// 草图由构建器自动补全约束(构造线+连接+KeyFix+长度/角度驱动尺寸),调用方不传形状/约束字段。
+    /// 角度 0/180 会退化(定位线与角度基准线共线,角度标注无定义),静态拦下。
+    /// </summary>
+    public sealed class PolarHoleRule : IFeatureRule
+    {
+        public string Code { get { return "E419"; } }
+        public Severity DefaultLevel { get { return Severity.Error; } }
+        public string[] AppliesTo { get { return new[] { "polarhole" }; } }
+
+        public IEnumerable<Issue> Check(ValidationContext ctx)
+        {
+            var s = ctx.Current;
+
+            // --- 定位:boltdia 必给 ---
+            if (!s.BoltDia.HasValue || s.BoltDia.Value <= 0)
+            {
+                yield return ctx.Error("E419", "boltdia",
+                    "polarhole 需要 boltdia(分布圆直径,米)。孔心 = 分布圆上的 angleDeg/angles 角度位置。",
+                    new { action = "set", field = "boltdia", unit = "m", example = 0.182 });
+                yield break;
+            }
+            if (s.BoltDia.Value > 5)
+                yield return ctx.Error("E419", "boltdia",
+                    "boltdia 是【直径】且单位米——当前值 " + GeoUtil.Fmt(s.BoltDia.Value) + " 疑似把 mm 当 m(>5m)。",
+                    new { action = "set", field = "boltdia", unit = "m" });
+
+            // --- 角度:angles 优先,退回 angleDeg 单孔 ---
+            if (s.AnglesParseError != null)
+            {
+                yield return ctx.Error("E419", "angles", s.AnglesParseError,
+                    new { action = "set", field = "angles", example = new[] { 30, 75, 120 } });
+                yield break;
+            }
+            bool hasAngles = s.AnglesDeg != null && s.AnglesDeg.Count > 0;
+            bool hasSingle = s.StartAngleDeg.HasValue;
+            if (!hasAngles && !hasSingle)
+            {
+                yield return ctx.Error("E419", "angles",
+                    "polarhole 需要角度:angles(数组,多孔各一特征)或 angleDeg(单孔)。",
+                    new { action = "provide", field = "angles", oneOf = new[] { "angles", "angleDeg" }, example = new[] { 30, 210, 330 } });
+                yield break;
+            }
+            if (hasAngles && hasSingle)
+                yield return ctx.Warn("W419", "angleDeg",
+                    "angles 与 angleDeg 同时给出:按 angles 执行(angleDeg 被忽略)。", null);
+
+            var angles = hasAngles ? s.AnglesDeg : new List<double> { s.StartAngleDeg.Value };
+            foreach (double a in angles)
+            {
+                if (double.IsNaN(a) || double.IsInfinity(a))
+                {
+                    yield return ctx.Error("E419", "angles", "角度含 NaN/Infinity,无法定位。", null);
+                    yield break;
+                }
+                double norm = ((a % 360) + 360) % 360;
+                if (Math.Abs(norm) < 1e-9 || Math.Abs(norm - 180) < 1e-9)
+                    yield return ctx.Error("E419", "angles",
+                        "角度 " + GeoUtil.Fmt(a) + "° 与 0°/180° 共线:定位线与角度基准线重合,角度标注退化。请错开至少 0.1°。",
+                        new { action = "set", field = "angles", must = "非 0/180(模 360)" });
+            }
+
+            // --- 孔径:diameter 或 thread(与 hole 同语义) ---
+            bool isThread = !string.IsNullOrWhiteSpace(s.Thread);
+            if (isThread)
+            {
+                ThreadRow row;
+                string lookupError;
+                if (!HoleThreadTable.TryFind(s.Standard, s.Thread, out row, out lookupError))
+                {
+                    yield return ctx.Error("E419", "thread", lookupError,
+                        new { action = "set", field = "thread", examples = new[] { "M10", "M10x1.25", "Rp1/2" } });
+                }
+                else if (s.Diameter.HasValue)
+                    yield return ctx.Warn("W419", "diameter",
+                        "螺纹孔的 diameter 会被忽略:实际孔径按螺纹规格走(" + row.Describe() + ")。", null);
+            }
+            else if (!s.Diameter.HasValue || s.Diameter.Value <= 0)
+            {
+                yield return ctx.Error("E419", "diameter",
+                    "polarhole 需要 diameter(孔径,米)或 thread(螺纹规格)。",
+                    new { action = "set", field = "diameter", unit = "m", example = 0.010 });
+            }
+
+            // --- 模式:finite 缺 depth 拦下(与 hole E409 同语义) ---
+            string mode = (s.Mode ?? "").Trim().ToLowerInvariant();
+            if (mode == "through_all" || mode == "through") mode = "all";
+            if (mode == "finite" && !s.Depth.HasValue)
+                yield return ctx.Error("E419", "depth",
+                    "mode=\"finite\" 必须给 depth(米),否则会静默套用 0.2 米的默认值。",
+                    new { action = "provide", field = "depth", hint = "如 \"depth\":0.02 = 盲孔深 20mm" });
+
+            // --- 不吃的字段诚实提醒 ---
+            if (s.HasCircle || s.HasCircles || s.Center != null)
+                yield return ctx.Warn("W419", "circle",
+                    "polarhole 的孔位由 boltdia+角度决定:circle/circles/center 会被忽略。要按坐标打孔请用 hole。", null);
+        }
+    }
+
     // ==================== P2 多轮廓(2026-09-23):loft / sweep / helix ====================
 
     /// <summary>
@@ -1115,11 +1367,12 @@ namespace SolidEdge.Spy.McpServer.Tools
     {
         public string Code { get { return "E410"; } }
         public Severity DefaultLevel { get { return Severity.Error; } }
-        public string[] AppliesTo { get { return new[] { "loft" }; } }
+        public string[] AppliesTo { get { return new[] { "loft", "loft_surface" }; } }
 
         public IEnumerable<Issue> Check(ValidationContext ctx)
         {
             var s = ctx.Current;
+            string opName = s.OpLower;
 
             if (s.ProfilesError != null)
             {
@@ -1131,7 +1384,7 @@ namespace SolidEdge.Spy.McpServer.Tools
             if (!s.HasProfiles)
             {
                 yield return ctx.Error("E410", "profiles",
-                    "loft 的形状必须声明在 profiles 数组里(顶层不收形状字段)。例:profiles:[{\"plane\":\"RefPlane_1\",\"circle\":[0,0,0.02]},{\"plane\":\"@P1\",\"circle\":[0,0,0.01]}]。",
+                    opName + " 的形状必须声明在 profiles 数组里(顶层不收形状字段)。例:profiles:[{\"plane\":\"RefPlane_1\",\"circle\":[0,0,0.02]},{\"plane\":\"@P1\",\"circle\":[0,0,0.01]}]。",
                     new { action = "provide", field = "profiles", minItems = 2 });
                 yield break;
             }
@@ -1139,13 +1392,63 @@ namespace SolidEdge.Spy.McpServer.Tools
             if (s.Profiles.Count < 2)
             {
                 yield return ctx.Error("E410", "profiles",
-                    "loft 至少 2 个截面(当前 " + s.Profiles.Count + " 个)——一个截面放不出体。",
+                    opName + " 至少 2 个截面(当前 " + s.Profiles.Count + " 个)——一个截面放不出体。",
                     new { action = "add_item", field = "profiles", minItems = 2 });
                 yield break;
             }
 
             foreach (var e in SectionIssues(ctx, s, 0, "E410"))
                 yield return e;
+
+            // 开口截面(2026-11-02):loft_surface 默认只收闭合轮廓,要开放壳必须显式 openProfile:true。
+            // 以前开口样条能过静态校验,却建到一半变僵尸(faceCount=0)再回滚,诊断语只说"检查轮廓是否闭合",
+            // 很难联想到"op 不放行开口截面";现在提前到静态层拦,要么闭合、要么显式声明。
+            if (opName == "loft_surface")
+            {
+                int openAt = -1;
+                for (int i = 0; i < s.Profiles.Count; i++)
+                {
+                    var p = s.Profiles[i];
+                    if (p.HasSpline && !p.SplineClosed) { openAt = i; break; }
+                }
+
+                if (openAt >= 0 && !s.OpenProfile)
+                    yield return ctx.Error("E410", "profiles[" + openAt + "].shape",
+                        "截面 profiles[" + openAt + "] 是开口样条(closed:false)。开口截面出的是【开放壳】," +
+                        "必须显式声明 \"openProfile\":true 才会放行;不想开口就给 \"closed\":true。",
+                        new { action = "set", field = "openProfile", value = true });
+            }
+
+            // 导线(2026-10-31):只支持 loft_surface,且必须是【开放样条】轮廓
+            if (s.GuidesError != null)
+            {
+                yield return ctx.Error("E410", "guides", s.GuidesError,
+                    new { action = "fix", field = "guides", format = "[{\"plane\":...,\"spline\":[[u,v],...]}]" });
+            }
+            else if (s.HasGuides && s.OpLower != "loft_surface")
+            {
+                yield return ctx.Error("E410", "guides",
+                    "guides(导线)目前只支持 loft_surface(实体 loft 还没接导线)。",
+                    new { action = "use", op = "loft_surface" });
+            }
+
+            for (int i = 0; i < s.Guides.Count; i++)
+            {
+                var g = s.Guides[i];
+                string at = "guides[" + i + "]";
+                if (string.IsNullOrWhiteSpace(g.PlaneRef))
+                    yield return ctx.Error("E410", at + ".plane",
+                        at + " 缺少 plane(导线所在平面,可用 @别名 / RefPlane_N / obj-K)。",
+                        new { action = "provide", field = at + ".plane" });
+                if (!g.HasSpline)
+                    yield return ctx.Error("E410", at + ".shape",
+                        at + " 导线必须是 spline(开放样条)轮廓:" + (g.ShapeError ?? ("当前形状=" + g.ShapeSource)),
+                        new { action = "set", field = at + ".shape", format = "\"spline\":[[u,v],...]" });
+                else if (g.SplineClosed)
+                    yield return ctx.Error("E410", at + ".shape",
+                        at + " 导线必须是【开放】样条(closed 不能 true)——闭合导线没有首尾对应关系。",
+                        new { action = "set", field = at + ".shape", suggested = false });
+            }
         }
 
         /// <summary>
@@ -1462,6 +1765,96 @@ namespace SolidEdge.Spy.McpServer.Tools
     }
 
     /// <summary>
+    /// E421:bluesurf 参数校验(2026-11-09)。
+    /// edgeOf 必填(@别名 / obj-K 句柄,同 E204 的口径);edges 必须是恰好 2 个整数的数组
+    /// (1-based Model.Body.Edges 序,去重)。两条边须共享端点——运行期由 handler 用 Vertex origins 解析,
+    /// 静态层不判端点相连性(SE 边锚定语义在 COM 侧,见 probes_bluesurf2/p8/p9)。
+    /// </summary>
+    public sealed class BluesurfRule : IFeatureRule
+    {
+        public string Code { get { return "E421"; } }
+        public Severity DefaultLevel { get { return Severity.Error; } }
+        public string[] AppliesTo { get { return new[] { "bluesurf" }; } }
+
+        public IEnumerable<Issue> Check(ValidationContext ctx)
+        {
+            var s = ctx.Current;
+
+            // edgeOf
+            if (s.EdgeOfError != null)
+            {
+                yield return ctx.Error("E421", "edgeOf", s.EdgeOfError,
+                    new { action = "set", field = "edgeOf", example = "@box" });
+                yield break;
+            }
+            if (string.IsNullOrWhiteSpace(s.EdgeOf))
+            {
+                yield return ctx.Error("E421", "edgeOf",
+                    "缺少 edgeOf 特征引用(边所属体,需 {\"edgeOf\":\"@别名\"} 或 {\"edgeOf\":\"obj-K\"})。",
+                    new { action = "provide", field = "edgeOf" });
+                yield break;
+            }
+            if (s.EdgeOf.StartsWith("@", StringComparison.Ordinal))
+            {
+                string key = s.EdgeOf.Substring(1);
+                if (!ctx.DefinedFeatures.TryGetValue(key, out int defIdx))
+                {
+                    yield return ctx.Error("E421", "edgeOf",
+                        "未找到本批内命名特征 \"@" + key + "\"(需先给前面的特征带 name 创建)。",
+                        new { action = "define_feature", name = key, beforeFeature = ctx.Index });
+                    yield break;
+                }
+                if (defIdx >= ctx.Index)
+                {
+                    yield return ctx.Error("E421", "edgeOf",
+                        "\"@" + key + "\" 是在第 " + defIdx + " 个特征定义的,不能在当前第 " + ctx.Index +
+                        " 个特征(前向引用)使用——必须把那个特征移到前面。",
+                        new { action = "reorder", moveFeature = defIdx, beforeFeature = ctx.Index });
+                    yield break;
+                }
+            }
+            else if (!s.EdgeOf.StartsWith("obj-", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return ctx.Error("E421", "edgeOf",
+                    "edgeOf 必须以 \"@\" 开头(本批别名)或 \"obj-\" 开头(跨批句柄),当前 \"" + s.EdgeOf + "\"。",
+                    new { action = "set", field = "edgeOf", example = "@box" });
+                yield break;
+            }
+
+            // edges:恰好 2 个整数
+            if (!s.HasEdgeIndices)
+            {
+                yield return ctx.Error("E421", "edges",
+                    "缺少 edges 边序号数组(需 {\"edges\":[1,2]},1-based Model.Body.Edges 序)。",
+                    new { action = "provide", field = "edges" });
+                yield break;
+            }
+            if (s.EdgeIndices.Count != 2)
+            {
+                yield return ctx.Error("E421", "edges",
+                    "edges 必须恰好 2 个边序号(当前 " + s.EdgeIndices.Count +
+                    " 个)。蓝面补面 v1 只支持两条共端点边;3 条边以上的补面未验证。",
+                    new { action = "set", field = "edges", example = new[] { 1, 2 } });
+                yield break;
+            }
+            if (s.EdgeIndices[0] < 1 || s.EdgeIndices[1] < 1)
+            {
+                yield return ctx.Error("E421", "edges",
+                    "边序号必须 >= 1(1-based Model.Body.Edges),当前 [" +
+                    s.EdgeIndices[0] + "," + s.EdgeIndices[1] + "]。",
+                    new { action = "set", field = "edges", example = new[] { 1, 2 } });
+                yield break;
+            }
+            if (s.EdgeIndices[0] == s.EdgeIndices[1])
+            {
+                yield return ctx.Error("E421", "edges",
+                    "两条边序号相同(" + s.EdgeIndices[0] + ")——蓝面需要两条不同的边。",
+                    new { action = "set", field = "edges", example = new[] { 1, 2 } });
+            }
+        }
+    }
+
+    /// <summary>
     /// E413:draft(拔模)参数校验。
     /// side(DraftSide)只认 igInside=4 / igOutside=5(对照表 §一 真机验证:传 1/2/3 全 E_FAIL)。
     /// angle 弧度 ∈ [0, π/2);plane 必给(draft 需拔模基准面)。
@@ -1594,6 +1987,14 @@ namespace SolidEdge.Spy.McpServer.Tools
                 yield return ctx.Error("E416", "thickness",
                     "thicken 的 thickness 必须 > 0(米)。",
                     new { action = "set", field = "thickness", must = "> 0", unit = "m" });
+
+            // side 是 FeaturePropertyConstants(igLeft=1/igRight=2/igSymmetric=3),不是拔模的 4/5;
+            // 传 4/5 在 SE 2022 必 E_INVALIDARG(2026-10-31 真机实测),静态层先拦。
+            if (s.Side.HasValue && (s.Side.Value < 1 || s.Side.Value > 3))
+                yield return ctx.Error("E416", "side",
+                    "thicken 的 side 只能是 1(igLeft)/2(igRight)/3(igSymmetric),当前 " + s.Side.Value +
+                    "(4/5 是拔模用的 igInside/igOutside,加厚传了必 E_INVALIDARG)。",
+                    new { action = "set", field = "side", allowed = new[] { 1, 2, 3 } });
         }
     }
 
@@ -1615,6 +2016,75 @@ namespace SolidEdge.Spy.McpServer.Tools
                 yield return ctx.Error("E417", "confirm",
                     "delete_face 是破坏性操作,必须显式传 \"confirm\":true 才会执行(防误删 blend 面)。",
                     new { action = "set", field = "confirm", must = "true" });
+        }
+    }
+
+    /// <summary>
+    /// E420:spline3d / arc3d(3D 曲线 op,2026-11-02)的几何自洽校验。
+    ///
+    /// 这两条曲线不进实体特征树,只往 3D 草图里加曲线;但参数错 SE 会直接抛 E_FAIL,
+    /// 所以在静态层先算清楚:
+    ///   · spline3d:points 至少 2 点、每点 [x,y,z](格式错误已记在 Points3DError);
+    ///   · arc3d:起点/终点到圆心的距离必须相等 —— 这是 AddByStartEndCenterNormal 唯一的失败点;
+    ///     调用方给的 radius 与几何不符只警告(构建器永远用算出来的值)。
+    /// </summary>
+    public sealed class Curve3DRule : IFeatureRule
+    {
+        public string Code { get { return "E420"; } }
+        public Severity DefaultLevel { get { return Severity.Error; } }
+        public string[] AppliesTo { get { return new[] { "spline3d", "arc3d" }; } }
+
+        public IEnumerable<Issue> Check(ValidationContext ctx)
+        {
+            var s = ctx.Current;
+
+            if (s.OpLower == "spline3d")
+            {
+                if (s.Points3DError != null)
+                    yield return ctx.Error("E420", "points", s.Points3DError,
+                        new { action = "fix", field = "points", format = "[[x,y,z],...](世界坐标,米)" });
+                yield break;
+            }
+
+            if (s.Arc3DError != null)
+            {
+                yield return ctx.Error("E420", "arc3d", s.Arc3DError,
+                    new { action = "provide", fields = new[] { "start", "end", "center" } });
+                yield break;
+            }
+
+            double rs = Dist(s.Start3D, s.Center3D);
+            double re = Dist(s.End3D, s.Center3D);
+            if (rs < 1e-9 || re < 1e-9)
+            {
+                yield return ctx.Error("E420", "start",
+                    "arc3d 的起点/终点与圆心重合(半径≈0),画不出圆弧。",
+                    new { action = "fix", field = "start/end/center" });
+                yield break;
+            }
+
+            if (Math.Abs(rs - re) > 1e-6)
+            {
+                yield return ctx.Error("E420", "end",
+                    "arc3d 几何不自洽:起点到圆心 " + GeoUtil.Fmt(rs) + " m,终点到圆心 " + GeoUtil.Fmt(re) +
+                    " m。该接口要求两端半径相等,不等必 E_FAIL;请修正 end 或 center。",
+                    new { action = "fix", field = "end", hint = "end 必须落在以 center 为心、半径 |start-center| 的圆上" });
+                yield break;
+            }
+
+            if (s.Radius.HasValue && Math.Abs(s.Radius.Value - rs) > 1e-6)
+            {
+                yield return ctx.Warn("W420", "radius",
+                    "给的 radius=" + GeoUtil.Fmt(s.Radius.Value) + " m 与几何半径 " + GeoUtil.Fmt(rs) +
+                    " m 不符,构建器按几何值创建(不必给 radius)。",
+                    new { action = "ignore", field = "radius", use = rs });
+            }
+        }
+
+        private static double Dist(double[] a, double[] b)
+        {
+            double dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+            return Math.Sqrt(dx * dx + dy * dy + dz * dz);
         }
     }
 
@@ -1666,7 +2136,8 @@ namespace SolidEdge.Spy.McpServer.Tools
     /// (se_model_build 遇 error 会拒绝执行整批,不该为这个拦住建模)。
     ///
     /// element 越界的可算性:解析器已把 rect 归一化成 4 点环、polygon/loops 直接给点列,
-    /// 所以"跨环扁平线索引"的总数 = Σ 各环点数(旋转轴是独立构造线,不占位)。
+    /// 所以"跨环扁平线索引"的总数 = Σ 各环点数(旋转轴是独立构造线,不占位;
+    /// 2026-11-05 起每张 2D 草图还默认带 X/Y 重合轴框架构造线,同样不占位——dims 索引只数声明的环几何)。
     /// </summary>
     public sealed class ConstraintBindingRule : IFeatureRule
     {
@@ -1858,9 +2329,13 @@ namespace SolidEdge.Spy.McpServer.Tools
     }
 
     /// <summary>
-    /// E408 / W408:pattern 的 of / counts / spacing。
-    /// E408 = 必然失败(缺 of、counts 非法、count&gt;1 却没给 spacing);
-    /// W408 = of 在本批之前找不到同名特征——可能引用的是更早调用或外部特征,不一定是错,只提醒。
+    /// E408 / W408:pattern 的字段校验。两种阵列(2026-11-08 起双开):
+    ///   圆周(缺省 kind):of / count(>=2) / spacing(fit)|spacingDeg / center / radius / clockwise / patterntype;
+    ///   矩形(kind:"rect"):of / xcount / ycount(>=1) / xspacing / yspacing(米,>0) / suppress?(1-based 列主序)/
+    ///   center?(阵列角点=种子位)/ radius? / patterntype? / angle?(度,非零未实测 → W408 提醒)。
+    /// E408 = 必然失败;W408 = 提醒(of 本批找不到、angle≠0 未实测)。
+    /// 历史注记:矩形阵列 2026-09-22 曾因 AddByRectangular 系统性 E_FAIL 判死并引导改圆周;
+    /// 2026-11-08 经 RectangularPatterns2d.Add(Type.Missing×4)链路真机打通后开放,死路清单见该规格文档。
     /// </summary>
     public sealed class PatternRule : IFeatureRule
     {
@@ -1871,6 +2346,32 @@ namespace SolidEdge.Spy.McpServer.Tools
         public IEnumerable<Issue> Check(ValidationContext ctx)
         {
             var s = ctx.Current;
+            bool isRect = string.Equals(s.Kind, "rect", StringComparison.OrdinalIgnoreCase);
+
+            if (s.Kind != null && !isRect && !string.Equals(s.Kind, "circular", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return ctx.Error("E408", "kind",
+                    "kind 只支持 \"circular\"(圆周阵列,缺省即它)或 \"rect\"(矩形阵列,2026-11-08 开放),收到 \"" + s.Kind + "\"。",
+                    new { action = "set", field = "kind", allowed = new[] { "circular", "rect" } });
+            }
+
+            if (isRect)
+            {
+                foreach (var issue in CheckRectPattern(ctx, s))
+                    yield return issue;
+                yield break;
+            }
+
+            // ---- 圆周阵列(缺省 kind):矩形字段出现 → E408 引导加 kind:"rect" ----
+            if (s.XCount.HasValue || s.YCount.HasValue || s.XSpacing.HasValue || s.YSpacing.HasValue ||
+                s.Suppress != null || s.SuppressParseError != null)
+            {
+                yield return ctx.Error("E408", "xcount",
+                    "xcount/ycount/xspacing/yspacing/suppress 属于矩形阵列——现已开放,请加 \"kind\":\"rect\"(2026-11-08)。" +
+                    "圆周阵列字段:count/spacing/spacingDeg/clockwise。",
+                    new { action = "set", field = "kind",
+                          example = "{\"op\":\"pattern\",\"kind\":\"rect\",\"of\":...,\"xcount\":3,\"ycount\":3,\"xspacing\":0.015,\"yspacing\":0.015}" });
+            }
 
             if (string.IsNullOrWhiteSpace(s.Of))
             {
@@ -1896,26 +2397,192 @@ namespace SolidEdge.Spy.McpServer.Tools
                         new { action = "verify", field = "of" });
             }
 
-            int xc = s.XCount ?? 1, yc = s.YCount ?? 1;
-            if (s.XCount.HasValue && s.XCount.Value < 1)
-                yield return ctx.Error("E408", "xcount", "xcount 必须 >= 1(当前 " + s.XCount.Value + ")。",
-                    new { action = "set", field = "xcount", min = 1 });
-            if (s.YCount.HasValue && s.YCount.Value < 1)
-                yield return ctx.Error("E408", "ycount", "ycount 必须 >= 1(当前 " + s.YCount.Value + ")。",
-                    new { action = "set", field = "ycount", min = 1 });
-            if (xc == 1 && yc == 1)
-                yield return ctx.Error("E408", "xcount",
-                    "xcount 与 ycount 不能同时为 1——至少一个方向要阵列,否则没有可阵列的东西。",
-                    new { action = "set", field = "xcount", hint = "如 xcount=3 + xspacing=0.02" });
+            // count:圆周实例总数(含输入特征),>= 2
+            if (!s.PatCount.HasValue)
+            {
+                yield return ctx.Error("E408", "count",
+                    "圆周阵列必须提供 count(实例总数,含输入特征,>= 2),如 \"count\":6。",
+                    new { action = "provide", field = "count", min = 2 });
+            }
+            else if (s.PatCount.Value < 2)
+            {
+                yield return ctx.Error("E408", "count",
+                    "count 必须 >= 2(当前 " + s.PatCount.Value + "):count 含输入特征自身,=1 就没有可阵列的东西。",
+                    new { action = "set", field = "count", min = 2 });
+            }
 
-            if (xc > 1 && !s.XSpacing.HasValue)
+            if (s.SpacingParseError != null)
+            {
+                yield return ctx.Error("E408", "spacing", s.SpacingParseError,
+                    new { action = "set", field = "spacing", example = "\"fit\" 或省略(等价 fit);固定角间距改用 spacingDeg" });
+            }
+            if (s.Spacing == "fit" && s.SpacingDeg.HasValue)
+            {
+                yield return ctx.Error("E408", "spacing",
+                    "spacing:\"fit\"(整圈均布)与 spacingDeg(固定角间距)互斥,只能给一个。",
+                    new { action = "set", field = "spacing|spacingdeg" });
+            }
+            if (s.SpacingDeg.HasValue && (s.SpacingDeg.Value <= 0 || s.SpacingDeg.Value >= 360))
+            {
+                yield return ctx.Error("E408", "spacingdeg",
+                    "spacingDeg 必须在 (0, 360) 度之间(当前 " + s.SpacingDeg.Value + ";整圈均布请直接用 \"spacing\":\"fit\")。",
+                    new { action = "set", field = "spacingdeg", range = "(0,360)", unit = "deg" });
+            }
+
+            if (s.Center != null && s.Center.Length != 2)
+            {
+                yield return ctx.Error("E408", "center",
+                    "center 必须是 2 个数字的数组 [u,v](阵列圆心,平面局部坐标,米)。",
+                    new { action = "set", field = "center", example = "[0,0]" });
+            }
+
+            if (s.Radius.HasValue && s.Radius.Value <= 0)
+            {
+                yield return ctx.Error("E408", "radius",
+                    "radius(阵列圆的草图显示半径,米)必须 > 0(当前 " + s.Radius.Value + ")。它只影响草图显示,不参与实例定位。",
+                    new { action = "set", field = "radius", unit = "m" });
+            }
+
+            if (s.PatternType != null &&
+                !string.Equals(s.PatternType, "smart", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(s.PatternType, "fast", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return ctx.Error("E408", "patterntype",
+                    "patterntype 只能是 \"smart\"(默认,关联特征)或 \"fast\"(轻量实例),收到 \"" + s.PatternType + "\"。",
+                    new { action = "set", field = "patterntype", allowed = new[] { "smart", "fast" } });
+            }
+        }
+
+        /// <summary>矩形阵列(kind:"rect")的字段校验。共享 of/center/radius/patterntype 语义,自有一套个数/间距/抑制校验。</summary>
+        private static IEnumerable<Issue> CheckRectPattern(ValidationContext ctx, FeatureSpec s)
+        {
+            if (string.IsNullOrWhiteSpace(s.Of))
+            {
+                yield return ctx.Error("E408", "of",
+                    "pattern 必须提供 of(被阵列特征:本批前面特征的 name、SE 特征名或 obj-K 句柄)。",
+                    new { action = "provide", field = "of" });
+            }
+            else if (!s.Of.StartsWith("obj-", StringComparison.OrdinalIgnoreCase))
+            {
+                bool foundInBatch = false;
+                for (int i = 0; i < ctx.Index; i++)
+                {
+                    if (string.Equals(ctx.Specs[i].Name, s.Of, StringComparison.OrdinalIgnoreCase))
+                    {
+                        foundInBatch = true;
+                        break;
+                    }
+                }
+                if (!foundInBatch)
+                    yield return ctx.Warn("W408", "of",
+                        "of=\"" + s.Of + "\" 在本批之前的特征里没有同名 name。若它不是 SE 已有特征名(见前面返回的 feature 字段),运行时会报\"未找到被阵列特征\"。",
+                        new { action = "verify", field = "of" });
+            }
+
+            if (!s.XCount.HasValue || !s.YCount.HasValue)
+            {
+                yield return ctx.Error("E408", "xcount",
+                    "矩形阵列必须提供 xcount 和 ycount(X/Y 方向实例数,>=1;=1 即单行/单列阵列)," +
+                    "如 \"xcount\":3,\"ycount\":3。",
+                    new { action = "provide", field = "xcount|ycount", min = 1 });
+            }
+            else
+            {
+                if (s.XCount.Value < 1)
+                    yield return ctx.Error("E408", "xcount",
+                        "xcount 必须 >= 1(当前 " + s.XCount.Value + ";=1 即单列阵列)。",
+                        new { action = "set", field = "xcount", min = 1 });
+                if (s.YCount.Value < 1)
+                    yield return ctx.Error("E408", "ycount",
+                        "ycount 必须 >= 1(当前 " + s.YCount.Value + ";=1 即单行阵列)。",
+                        new { action = "set", field = "ycount", min = 1 });
+            }
+
+            if (!s.XSpacing.HasValue || !s.YSpacing.HasValue)
+            {
                 yield return ctx.Error("E408", "xspacing",
-                    "xcount=" + xc + " 时必须提供 xspacing(米,> 0)。",
-                    new { action = "provide", field = "xspacing", unit = "m" });
-            if (yc > 1 && !s.YSpacing.HasValue)
-                yield return ctx.Error("E408", "yspacing",
-                    "ycount=" + yc + " 时必须提供 yspacing(米,> 0)。",
-                    new { action = "provide", field = "yspacing", unit = "m" });
+                    "矩形阵列必须提供 xspacing/yspacing(X/Y 实例间距,米,>0),如 \"xspacing\":0.015,\"yspacing\":0.015。",
+                    new { action = "provide", field = "xspacing|yspacing", unit = "m" });
+            }
+            else
+            {
+                if (s.XSpacing.Value <= 0)
+                    yield return ctx.Error("E408", "xspacing",
+                        "xspacing 必须 > 0(当前 " + s.XSpacing.Value + ")。实例间距 <= 相邻特征尺寸之和会布尔退化成僵尸。",
+                        new { action = "set", field = "xspacing", unit = "m" });
+                if (s.YSpacing.Value <= 0)
+                    yield return ctx.Error("E408", "yspacing",
+                        "yspacing 必须 > 0(当前 " + s.YSpacing.Value + ")。实例间距 <= 相邻特征尺寸之和会布尔退化成僵尸。",
+                        new { action = "set", field = "yspacing", unit = "m" });
+            }
+
+            if (s.SuppressParseError != null)
+            {
+                yield return ctx.Error("E408", "suppress", s.SuppressParseError,
+                    new { action = "set", field = "suppress", example = "[5,9](1-based occurrence 序号,列主序)" });
+            }
+            if (s.Suppress != null && s.XCount.HasValue && s.YCount.HasValue)
+            {
+                int total = s.XCount.Value * s.YCount.Value;
+                foreach (int k in s.Suppress)
+                {
+                    if (k < 1 || k > total)
+                    {
+                        yield return ctx.Error("E408", "suppress",
+                            "suppress 序号 " + k + " 越界:合法范围 [1, xcount*ycount=" + total + "]。序号 1-based 列主序" +
+                            "(X 先递增 Y):col=(k-1)/ycount 整除,row=(k-1)%ycount。",
+                            new { action = "set", field = "suppress", range = "[1," + total + "]" });
+                        break;
+                    }
+                }
+            }
+
+            // 圆周专用字段误入 rect:显式引导(比静默忽略诚实)
+            if (s.PatCount.HasValue)
+                yield return ctx.Error("E408", "count",
+                    "rect 矩形阵列不用 count(那是圆周的实例总数):X/Y 方向个数用 xcount/ycount。",
+                    new { action = "set", field = "xcount|ycount" });
+            if (s.Spacing != null || s.SpacingDeg.HasValue || s.SpacingParseError != null)
+                yield return ctx.Error("E408", "spacing",
+                    "rect 矩形阵列不用 spacing/spacingDeg(那是圆周的角间距):实例间距用 xspacing/yspacing(米)。",
+                    new { action = "set", field = "xspacing|yspacing", unit = "m" });
+            if (s.Clockwise.HasValue)
+                yield return ctx.Error("E408", "clockwise",
+                    "rect 矩形阵列不用 clockwise(圆周专用):展开方向由 angle 控制。",
+                    new { action = "set", field = "angle" });
+
+            // 角度:2026-11-08 真机单点实测(angle=15°)——特征能建成(occ/间距/正交都对),但实例方向与
+            // cos/sin 约定严重不符(+X 实例落在 229.4° 而非 15°,另有实例伸出毛坯边界),语义未破解。
+            // 按不猜原则:E408 拒绝,只放行 angle=0(证据:_rect_backup_20261108/b13d_out.json + census)。
+            double rectAngleRad = s.Degrees.HasValue ? s.Degrees.Value * Math.PI / 180.0 : (s.Angle ?? 0);
+            if (Math.Abs(rectAngleRad) > 1e-9)
+                yield return ctx.Error("E408", "angle",
+                    "矩形阵列 angle 只支持 0(缺省):angle≠0 的实例方向语义未破解——2026-11-08 真机实测 angle=15° 时" +
+                    "+X 实例落在 229.4°(约定应为 15°),且实例可伸出毛坯边界。倾斜网格请改用其它方式(如旋转种子后阵列)。",
+                    new { action = "set", field = "angle", value = 0 });
+
+            if (s.Center != null && s.Center.Length != 2)
+            {
+                yield return ctx.Error("E408", "center",
+                    "center 必须是 2 个数字的数组 [u,v](阵列角点=种子位置,载体平面局部坐标,米)。",
+                    new { action = "set", field = "center", example = "[0,0]" });
+            }
+
+            if (s.Radius.HasValue && s.Radius.Value <= 0)
+            {
+                yield return ctx.Error("E408", "radius",
+                    "radius(载体种子位圆的草图显示半径,米)必须 > 0(当前 " + s.Radius.Value + ")。",
+                    new { action = "set", field = "radius", unit = "m" });
+            }
+
+            if (s.PatternType != null &&
+                !string.Equals(s.PatternType, "smart", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(s.PatternType, "fast", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return ctx.Error("E408", "patterntype",
+                    "patterntype 只能是 \"smart\"(默认,关联特征)或 \"fast\"(轻量实例),收到 \"" + s.PatternType + "\"。",
+                    new { action = "set", field = "patterntype", allowed = new[] { "smart", "fast" } });
+            }
         }
     }
 
@@ -2110,6 +2777,41 @@ namespace SolidEdge.Spy.McpServer.Tools
                 sb.Append(GeoUtil.Fmt(b[i]));
             }
             return sb.ToString();
+        }
+    }
+
+    /// <summary>
+    /// W433:replaceOf(重建语义,通用规则 12)传给了【不支持重建删除】的 op。
+    ///
+    /// 背景(2026-11-05 法兰重建实测):replaceOf 静默空删三重奏——
+    ///   ① extrude/cut/revolve/boltcircle 压根不调 ReplaceNamedFeatures(声明被无视);
+    ///   ② PatternOp 删除时 warnings=null,"未找到/删除失败"全被吞;
+    ///   ③ op 的 name 从不落到 SE 特征名,FindFeatureByName 按 op 名永远匹配不到。
+    /// 2026-11-06 修复后核心 7 op(extrude/cut/revolve/hole/polarhole/boltcircle/pattern)已接入
+    /// 且特征按 op 名落名;其余 op(loft/sweep/helix/fillet/chamfer/rib/曲面/3D 曲线等)
+    /// 声明 replaceOf 时在静态层提前报 warning——执行期一律忽略,不能让调用方以为删了。
+    /// </summary>
+    public sealed class ReplaceOfRule : IFeatureRule
+    {
+        public string Code { get { return "W433"; } }
+        public Severity DefaultLevel { get { return Severity.Warning; } }
+        public string[] AppliesTo { get { return new[] { "*" }; } }
+
+        private static readonly System.Collections.Generic.HashSet<string> Supported =
+            new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "extrude", "cut", "revolve", "hole", "polarhole", "boltcircle", "pattern" };
+
+        public IEnumerable<Issue> Check(ValidationContext ctx)
+        {
+            var s = ctx.Current;
+            if (s == null || string.IsNullOrWhiteSpace(s.ReplaceOf) || string.IsNullOrWhiteSpace(s.OpLower))
+                yield break;
+            if (Supported.Contains(s.OpLower))
+                yield break;
+            yield return ctx.Warn("W433", "replaceOf",
+                "op \"" + s.OpLower + "\" 不支持 replaceOf 重建删除,该声明将被忽略(静默无效果)。目前支持:" +
+                "extrude/cut/revolve/hole/polarhole/boltcircle/pattern;其它 op 重建请先手动删除旧特征或改用支持的 op。",
+                new { action = "fix_and_retry", check = new[] { "op", "replaceOf" } });
         }
     }
 }

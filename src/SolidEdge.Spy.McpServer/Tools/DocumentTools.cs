@@ -27,17 +27,27 @@ public static class DocumentTools
 		public object Document;
 		public string Key;
 		public string FullName;
-		public string LastHandleId;
-		public bool RequestedReadOnly;
-		public string Origin;
-		public DateTime OpenedAt;
 	}
 
 	private static readonly ConcurrentDictionary<string, TrackedDocument> TrackedDocs =
 		new ConcurrentDictionary<string, TrackedDocument>(StringComparer.OrdinalIgnoreCase);
 
+	/// <summary>该 COM 对象是否为本会话追踪的文档(open/new 登记)。internal 供 InvokeTools 拦截通用通道 Close(2026-11-06 自 dot/master 同步)。</summary>
+	internal static bool IsTrackedDocument(object doc)
+	{
+		if (doc == null || !Marshal.IsComObject(doc)) return false;
+		foreach (var entry in TrackedDocs.Values)
+		{
+			if (ReferenceEquals(entry.Document, doc)) return true;
+		}
+		return false;
+	}
+
 	[McpServerTool]
-	[Description("获取当前活动文档的基本信息:文档类型(COM 真实类型名,如 SolidEdgePart.PartDocument)、文件名、全路径、所在环境,以及内容探针(modelsCount=零件模型数,occurrencesCount=装配件数,sheetsCount=图纸页数,不适用为 null)。AI 应在调用其它工具前先调此工具了解上下文;建模前确认文档身份和是否空模板也先用它,不用再跑一次性脚本。")]
+	[Description("获取当前活动文档的基本信息:COM 类型名、文件名、全路径、所在环境,以及内容探针" +
+		"(modelsCount/occurrencesCount/sheetsCount,不适用为 null)。" +
+		"返回含 build=构建时间戳(部署滞后自检:与源码改动时间对不上=跑的是旧二进制)。" +
+		"调用其它工具前先调它了解上下文;建模前确认文档身份与是否空模板也用它。")]
 	public static string se_get_document(SolidEdgeContext context)
 	{
 		try
@@ -81,7 +91,9 @@ public static class DocumentTools
 						// 建模前确认"是空模板"不用再跑一次性脚本(se_open_document 同款探针思路)。
 						modelsCount = SafeProbeCount(activeDocument, "Models"),
 						occurrencesCount = SafeProbeCount(activeDocument, "Occurrences"),
-						sheetsCount = SafeProbeCount(activeDocument, "Sheets")
+						sheetsCount = SafeProbeCount(activeDocument, "Sheets"),
+						// 版本自报(P0-1,2026-11-10):csproj 注入 AssemblyMetadata(BuildTime),每次构建刷新。
+						build = SolidEdge.Spy.McpServer.Telemetry.BuildInfo.Stamp
 					}
 				});
 			});
@@ -93,8 +105,12 @@ public static class DocumentTools
 	}
 
 	[McpServerTool]
-	[Description("打开一个 Solid Edge 文档(.par/.asm/.dft/.psm/.pwd 等)并登记句柄。只有本工具打开的文档会进入追踪表;配套的 se_close_document 只允许关闭追踪表里的文档,绝不会误关用户手动打开的文档。注意:SE 的 Documents.Open API 没有 readonly 参数,本工具会在结果里如实报告文档实际的只读状态;要强制只读请在批处理前设环境变量 SE_MCP_READONLY=1(全局禁写)。Open 前会临时把 DisplayAlerts 置 false 防止外链接丢失等对话框把调用卡死,结束后恢复;返回前做一次轻量读取探针(Sheets/Models/Occurrences 的 Count)确认文档可读(防半加载)。每次打开都会把该文档切换为 ActiveDocument;同一文件重复打开会返回现有文档并刷新追踪表。")]
-	public static string se_open_document(SolidEdgeContext context, [Description("要打开的文件完整路径")] string path, [Description("期望以只读方式使用。注意 SE API 不支持只读打开,本参数仅用于在结果里提示实际状态与期望是否一致")] bool readOnly = false)
+	[Description("打开一个 Solid Edge 文档(.par/.asm/.dft/.psm/.pwd 等)并登记句柄。只有本工具打开的文档进追踪表," +
+		"se_close_document 只能关追踪表里的,不会误关用户手开的文档。" +
+		"Documents.Open 没有 readonly 参数,结果里如实报告实际只读状态;要强制只读请设 SE_MCP_READONLY=1。" +
+		"Open 前临时 DisplayAlerts=false 防对话框卡死,返回前用 Count 探针确认可读。" +
+		"每次打开都切成 ActiveDocument;同文件重复打开返回现有文档并刷新追踪表。")]
+	public static string se_open_document(SolidEdgeContext context, [Description("要打开的文件完整路径")] string path, [Description("期望只读。SE API 不支持只读打开,本参数仅用于比对结果里的实际状态")] bool readOnly = false)
 	{
 		try
 		{
@@ -162,11 +178,7 @@ public static class DocumentTools
 					{
 						Document = doc,
 						Key = fullPath,
-						FullName = fullName,
-						LastHandleId = handleId,
-						RequestedReadOnly = readOnly,
-						Origin = "opened",
-						OpenedAt = DateTime.Now
+						FullName = fullName
 					};
 					AuditLog.Write("se_open_document", handleId, "Open", false, fullPath, InvocationRisk.ModelChanging, true, null);
 					string readOnlyNote = null;
@@ -213,7 +225,10 @@ public static class DocumentTools
 	}
 
 	[McpServerTool]
-	[Description("关闭一个由 se_open_document 打开的文档。安全规则:只能关闭本会话追踪表里的文档(即由 se_open_document 打开的),用户手动打开的文档永远无法通过本工具关闭。target 传 obj-N 句柄或文档全路径均可。关闭前检查 Document.Dirty:有未保存修改(或修改状态读不出)时默认拒绝,必须显式 confirm=true;本工具永不保存——保存与否由用户在 Solid Edge 里决定,confirm 后按丢弃修改关闭。close 全程包在 DisplayAlerts=false 里防保存对话框卡死。注意 MCP 进程重启后追踪表清空,重启前打开的文档会因'无主'被拒绝关闭(安全默认,请人工处理)。")]
+	[Description("关闭一个由 se_open_document 打开的文档。只能关本会话追踪表里的文档,用户手开的永远关不掉。" +
+		"target 传 obj-N 或全路径。关闭前检查 Document.Dirty:有未保存修改(或读不出)时默认拒绝,必须显式 confirm=true;" +
+		"本工具永不保存,confirm 后按丢弃修改关闭。" +
+		"MCP 进程重启后追踪表清空,重启前打开的文档会因'无主'被拒绝关闭(请人工处理)。")]
 	public static string se_close_document(SolidEdgeContext context, [Description("要关闭的文档:obj-N 句柄或文档全路径(必须是本会话 se_open_document 打开过的)")] string target, [Description("文档有未保存修改(Dirty=true)或修改状态读不出时,必须显式置 true 才会丢弃修改并关闭;本工具永不保存")] bool confirm = false)
 	{
 		try
@@ -270,7 +285,9 @@ public static class DocumentTools
 						try { app.DisplayAlerts = previousAlerts; } catch { }
 					}
 				}
-				TrackedDocs.TryRemove(tracked.FullName, out var _);
+				// 用 RemoveTracked 而不是按 FullName 删:SaveAs 后追踪表里可能存着旧 key 别名,
+				// 只删一个 key 会留下指向已关闭文档的悬空条目。
+				RemoveTracked(tracked);
 				bool discarded = dirty.HasValue && dirty.Value;
 				AuditLog.Write("se_close_document", tracked.FullName, "Close", false, tracked.FullName, discarded ? InvocationRisk.Destructive : InvocationRisk.ModelChanging, true, discarded ? "丢弃未保存修改" : null);
 				string newActive = null;
@@ -291,7 +308,7 @@ public static class DocumentTools
 					closed = tracked.FullName,
 					dirtyWas = dirty,
 					discardedChanges = discarded,
-					remainingTracked = TrackedDocs.Count,
+					remainingTracked = TrackedDocs.Values.Distinct().Count(),
 					newActiveDocument = newActive ?? "(无)",
 					hint = "文档已关闭并移出追踪表。句柄表中指向该文档的其他 obj-N 句柄已失效,继续使用请重新获取。"
 				});
@@ -304,7 +321,272 @@ public static class DocumentTools
 	}
 
 	[McpServerTool]
-	[Description("新建一个空的 Solid Edge 文档(未保存)并登记句柄、进入追踪表(origin=created)。只有本工具创建的文档会进追踪表;se_close_document 只能关闭追踪表里的文档。类型支持 part/assembly/draft/sheetmetal/weldment,也可直接传 ProgID(如 SolidEdge.PartDocument)。注意:新建文档从未保存,SE 视其为已修改(Dirty),因此关闭时需要 confirm=true——新建文档无内容,丢弃无损失。工具组没有独立保存工具,落盘走 se_invoke_member(句柄,'SaveAs',['全路径'])或脚本;要放进装配(se_assembly_build place)的零件必须先 SaveAs 落盘——place 的 file 参数需要文件路径。测试纪律:先盘点复用(se_invoke_chain 查 Documents.Count),确实要新建才用本工具,收尾逐个 se_close_document,别让测试文档堆积。")]
+	[Description("把当前文档落盘(SaveAs)。①占用检测:目标路径正被本会话另一个文档占用时默认自动关闭它" +
+		"(Dirty=true 时拒绝并指路 se_close_document),避免 EBUSY/覆盖弹窗;" +
+		"②覆盖策略:目标已存在默认拒绝(overwrite=false),显式 true 才先删再存;" +
+		"③成功判定靠回读 Document.FullName 与目标路径比对——不看'没抛异常'。" +
+		"保存后追踪表跟随改名(旧 key 保留为别名)。只能保存追踪表内的文档;缺扩展名按文档类型自动补。")]
+	public static string se_save_document(
+		SolidEdgeContext context,
+		[Description("目标文件完整路径,如 E:\\out\\Flange.par。缺扩展名时按当前文档类型自动补。")] string path,
+		[Description("要保存的文档:obj-N 句柄或文档全路径;缺省=当前活动文档。必须在追踪表内。")] string target = null,
+		[Description("目标文件已存在时是否覆盖(默认 false=拒绝,防误删)。true 会先删除已存在文件再保存。")] bool overwrite = false,
+		[Description("目标路径被本会话另一个文档占用时是否自动关闭它(默认 true);它 Dirty 时仍拒绝。")] bool closeConflict = true)
+	{
+		try
+		{
+			if (string.IsNullOrWhiteSpace(path))
+			{
+				return Error("path 不能为空(要保存到的完整路径,如 E:\\out\\Flange.par)。");
+			}
+			return context.Invoke(delegate
+			{
+				Application app = context.GetApplication();
+
+				// ---------- 1) 定位文档(必须在追踪表内) ----------
+				TrackedDocument tracked;
+				if (string.IsNullOrWhiteSpace(target))
+				{
+					object active = null;
+					try { active = app.ActiveDocument; }
+					catch { active = null; }
+					if (active == null)
+					{
+						return Error("当前没有活动文档,也没有给 target。请先打开或新建文档。");
+					}
+					tracked = FindTrackedByComObject(active);
+					if (tracked == null)
+					{
+						return Error("拒绝保存:当前活动文档不在本会话追踪表里。se_save_document 只操作由 se_open_document / se_new_document 产生(或打开)的文档;"
+									 + "用户手动打开的文档请自行保存,或先用 se_open_document 打开它使其进入追踪表。当前追踪表: " + ListTracked() + "。");
+					}
+				}
+				else
+				{
+					tracked = FindTracked(context, target);
+					if (tracked == null)
+					{
+						return Error("拒绝保存:\"" + target + "\" 不在本会话追踪表里。当前追踪表: " + ListTracked() + "。");
+					}
+				}
+
+				// ---------- 2) 路径规范化 + 补扩展名 ----------
+				string targetPath;
+				try
+				{
+					targetPath = Path.GetFullPath(path.Trim().Trim('"'));
+				}
+				catch (Exception ex)
+				{
+					return Error("路径非法: " + ex.Message);
+				}
+				if (string.IsNullOrEmpty(Path.GetExtension(targetPath)))
+				{
+					string ext = GuessDocumentExtension(tracked.Document);
+					if (!string.IsNullOrEmpty(ext))
+					{
+						targetPath = targetPath + ext;
+					}
+				}
+
+				string previousFullName = TryGetString(tracked.Document, "FullName");
+				bool wasUntitled = string.IsNullOrEmpty(previousFullName) || !IsAbsolutePath(previousFullName);
+
+				// ---------- 3) 占用检测:目标路径是否已被另一个已打开文档占用 ----------
+				List<object> occupied = new List<object>();
+				List<string> occupiedDesc = new List<string>();
+				try
+				{
+					object docs = app.Documents;
+					int docCount = Convert.ToInt32(docs.GetType().InvokeMember("Count", BindingFlags.GetProperty, null, docs, null));
+					for (int i = 1; i <= docCount; i++)
+					{
+						object d = null;
+						try { d = docs.GetType().InvokeMember("Item", BindingFlags.GetProperty | BindingFlags.InvokeMethod, null, docs, new object[] { i }); }
+						catch { continue; }
+						if (d == null || IsSameComObject(d, tracked.Document)) continue;
+						string fn = TryGetString(d, "FullName");
+						if (string.IsNullOrEmpty(fn) || !IsAbsolutePath(fn)) continue;
+						string normalized;
+						try { normalized = Path.GetFullPath(fn); }
+						catch { continue; }
+						if (!string.Equals(normalized, targetPath, StringComparison.OrdinalIgnoreCase)) continue;
+						occupied.Add(d);
+						bool? dirty = TryGetBool(d, "Dirty");
+						occupiedDesc.Add(normalized + "(dirty=" + (dirty.HasValue ? dirty.Value.ToString() : "读不出") + ")");
+					}
+				}
+				catch (Exception ex)
+				{
+					// 探针失败不阻断:继续走后面的 File.Exists/Delete 分支,由它们给真实原因
+					occupiedDesc.Add("占用探测失败: " + ex.Message);
+				}
+
+				List<string> closedConflicts = new List<string>();
+				if (occupied.Count > 0)
+				{
+					if (!closeConflict)
+					{
+						return Error("拒绝保存:目标路径 " + targetPath + " 正被本会话另一个文档占用 [" + string.Join("; ", occupiedDesc)
+									 + "]。可加 closeConflict=true 让它自动关闭(仅在该文档无未保存修改时),或改用另一个文件名。");
+					}
+					foreach (object d in occupied)
+					{
+						bool? dirty = TryGetBool(d, "Dirty");
+						if (!dirty.HasValue || dirty.Value)
+						{
+							string fn = TryGetString(d, "FullName");
+							return Error("拒绝保存:占用目标路径的文档 " + fn + " 有未保存修改(dirty=" + (dirty.HasValue ? "true" : "读不出")
+										 + "),自动关闭会丢修改。请先用 se_close_document 决定丢弃或另存,再重试。");
+						}
+						try
+						{
+							d.GetType().InvokeMember("Close", BindingFlags.InvokeMethod, null, d,
+								new object[3] { false, Type.Missing, Type.Missing });
+							TrackedDocument stale = FindTrackedByComObject(d);
+							if (stale != null) RemoveTracked(stale);
+							closedConflicts.Add(TryGetString(d, "FullName"));
+						}
+						catch (Exception ex)
+						{
+							return Error("占用文档关闭失败(" + ex.Message + "),请手动关闭后重试。目标路径: " + targetPath);
+						}
+					}
+				}
+
+				// ---------- 4) 覆盖策略 ----------
+				if (File.Exists(targetPath))
+				{
+					if (!overwrite)
+					{
+						return Error("拒绝保存:目标文件已存在 " + targetPath + "。确认覆盖请传 overwrite=true(会先删除该文件;"
+									 + "若它正被 Solid Edge 或其它程序占用,删除会失败并如实报错)。");
+					}
+					try
+					{
+						File.Delete(targetPath);
+					}
+					catch (Exception ex)
+					{
+						return Error("覆盖失败:无法删除已存在的 " + targetPath + " —— " + ex.Message
+									 + "。常见原因:该文件仍被某个 Solid Edge 文档占用(先用 se_close_document 关掉)或被杀软/资源管理器锁定。");
+					}
+				}
+
+				// ---------- 5) SaveAs(DisplayAlerts=false 防覆盖确认框) ----------
+				Exception saveError = null;
+				bool previousAlerts = true;
+				bool alertsChanged = false;
+				try
+				{
+					try { previousAlerts = app.DisplayAlerts; app.DisplayAlerts = false; alertsChanged = true; }
+					catch { }
+					try
+					{
+						tracked.Document.GetType().InvokeMember("SaveAs", BindingFlags.InvokeMethod, null,
+							tracked.Document, new object[] { targetPath });
+					}
+					catch (Exception ex)
+					{
+						saveError = ex;
+					}
+				}
+				finally
+				{
+					if (alertsChanged)
+					{
+						try { app.DisplayAlerts = previousAlerts; } catch { }
+					}
+				}
+
+				// ---------- 6) 回读校验(不看"没抛异常") ----------
+				string nowFullName = TryGetString(tracked.Document, "FullName");
+				bool landed = false;
+				try
+				{
+					landed = !string.IsNullOrEmpty(nowFullName) && IsAbsolutePath(nowFullName)
+							 && string.Equals(Path.GetFullPath(nowFullName), targetPath, StringComparison.OrdinalIgnoreCase);
+				}
+				catch { landed = false; }
+
+				if (saveError != null || !landed)
+				{
+					string why = saveError != null
+						? "SaveAs 抛异常: " + DescribeError(saveError)
+						: "SaveAs 没报错但回读 Document.FullName=\"" + (nowFullName ?? "(空)") + "\" 与目标路径不符(文件可能没落地)";
+					return JsonSerializer.Serialize(new
+					{
+						status = "error",
+						message = "保存失败: " + why,
+						targetPath,
+						documentFullNameNow = nowFullName,
+						fileExists = File.Exists(targetPath),
+						closedConflicts,
+						hint = "兜底通道:se_invoke_member(文档句柄,'SaveAs',['" + targetPath.Replace("\\", "\\\\") + "'])。"
+							   + "仍失败时优先怀疑:目标被占用(先 se_close_document)、目录无写权限、或路径含 SE 不接受的字符。"
+					});
+				}
+
+				// ---------- 7) 追踪表跟随改名(旧 key 保留为别名) ----------
+				string oldKey = tracked.Key;
+				string newName = TryGetString(tracked.Document, "Name");
+				List<string> removedKeys = RemoveTracked(tracked);
+				tracked.FullName = targetPath;
+				tracked.Key = targetPath;
+				TrackedDocs[targetPath] = tracked;
+				List<string> trackedKeys = new List<string> { targetPath };
+				if (!string.IsNullOrEmpty(newName) && !trackedKeys.Contains(newName))
+				{
+					TrackedDocs[newName] = tracked;
+					trackedKeys.Add(newName);
+				}
+				bool aliasKept = false;
+				if (!string.IsNullOrEmpty(oldKey) && !string.Equals(oldKey, targetPath, StringComparison.OrdinalIgnoreCase))
+				{
+					TrackedDocs[oldKey] = tracked;
+					trackedKeys.Add(oldKey);
+					aliasKept = true;
+				}
+
+				AuditLog.Write("se_save_document", targetPath, "SaveAs", false, targetPath, InvocationRisk.ModelChanging, true, null);
+
+				return JsonSerializer.Serialize(new
+				{
+					status = "ok",
+					path = targetPath,
+					previousFullName = string.IsNullOrEmpty(previousFullName) ? null : previousFullName,
+					wasUntitled,
+					overwrite,
+					closedConflicts,
+					readBack = new
+					{
+						fullName = nowFullName,
+						name = newName,
+						dirty = TryGetBool(tracked.Document, "Dirty"),
+						fileExists = File.Exists(targetPath)
+					},
+					tracking = new
+					{
+						keys = trackedKeys,
+						oldKeyKeptAsAlias = aliasKept,
+						removedKeys,
+						trackedDocumentCount = TrackedDocs.Values.Distinct().Count()
+					},
+					hint = "已落盘并回读确认。追踪表已跟随改名:se_close_document 用新路径、文件名或原 key 都能命中。"
+				});
+			});
+		}
+		catch (Exception ex)
+		{
+			return Error("保存文档失败: " + DescribeError(ex));
+		}
+	}
+
+	[McpServerTool]
+	[Description("新建一个空的 Solid Edge 文档(未保存)并登记句柄、进入追踪表(origin=created)。只有本工具创建的文档进追踪表。" +
+		"类型支持 part/assembly/draft/sheetmetal/weldment,也可传 ProgID。" +
+		"新建文档从未保存,SE 视为已修改(Dirty),关闭时需 confirm=true(无内容,丢弃无损失)。" +
+		"要放进装配 place 的零件必须先落盘。")]
 	public static string se_new_document(SolidEdgeContext context, [Description("文档类型:part(默认)/assembly/draft/sheetmetal/weldment,或直接传 ProgID")] string docType = "part")
 	{
 		try
@@ -341,15 +623,11 @@ public static class DocumentTools
 					string typeShort = ((resolvedType != null) ? resolvedType.Substring(resolvedType.LastIndexOf('.') + 1) : doc.GetType().Name);
 					bool? dirty = TryGetBool(doc, "Dirty");
 					string handleId = context.AddHandle(doc, typeShort, name);
-					TrackedDocs[name] = new TrackedDocument
+				TrackedDocs[name] = new TrackedDocument
 					{
 						Document = doc,
 						Key = name,
-						FullName = name,
-						LastHandleId = handleId,
-						RequestedReadOnly = false,
-						Origin = "created",
-						OpenedAt = DateTime.Now
+						FullName = name
 					};
 					AuditLog.Write("se_new_document", handleId, "Add", false, progId, InvocationRisk.ModelChanging, true, null);
 					return JsonSerializer.Serialize(new
@@ -364,7 +642,7 @@ public static class DocumentTools
 						origin = "created",
 						createdAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
 						tracked = true,
-						hint = "未命名文档没有 FullName,追踪表以文档名为 key;SaveAs 后请继续用句柄关闭(key 不随改名更新)。该文档已切换为 ActiveDocument;关闭需 confirm=true(新文档在 SE 里视为已修改)。落盘:se_invoke_member(本句柄,'SaveAs',['全路径']) 或脚本;要装配 place 的零件必须先落盘(place.file 需文件路径)。"
+						hint = "未命名文档没有 FullName,追踪表以文档名为 key;落盘请用 se_save_document(会回读确认,并让追踪表跟随改名,旧 key 保留为别名)。该文档已切换为 ActiveDocument;关闭需 confirm=true(新文档在 SE 里视为已修改)。要装配 place 的零件必须先落盘。"
 					});
 				}
 				finally
@@ -382,7 +660,8 @@ public static class DocumentTools
 		}
 	}
 
-	private static string ResolveDocumentProgId(string docType)
+	/// <summary>文档类型 → ProgID。internal:se_model_build 的 doc op 复用同一张表(不另写一份)。</summary>
+	internal static string ResolveDocumentProgId(string docType)
 	{
 		if (string.IsNullOrWhiteSpace(docType))
 		{
@@ -450,13 +729,95 @@ public static class DocumentTools
 			|| string.Equals(SafeGetProperty(t.Document, "Name"), text, StringComparison.OrdinalIgnoreCase));
 	}
 
+	/// <summary>按 COM 对象在追踪表里找文档(缺省 target=ActiveDocument 时用)。</summary>
+	private static TrackedDocument FindTrackedByComObject(object comObject)
+	{
+		if (comObject == null) return null;
+		foreach (KeyValuePair<string, TrackedDocument> item in TrackedDocs)
+		{
+			if (IsSameComObject(item.Value.Document, comObject))
+			{
+				return item.Value;
+			}
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// 把一个 tracked 文档从表里彻底摘掉——包括 SaveAs 后保留的旧 key 别名(别名指向同一对象,
+	/// 只按 FullName 删会留下悬空条目,之后 FindTracked 会命中已关闭的文档)。
+	/// </summary>
+	private static List<string> RemoveTracked(TrackedDocument tracked)
+	{
+		List<string> removed = new List<string>();
+		if (tracked == null) return removed;
+		foreach (KeyValuePair<string, TrackedDocument> item in TrackedDocs)
+		{
+			if (ReferenceEquals(item.Value, tracked))
+			{
+				((IDictionary<string, TrackedDocument>)TrackedDocs).Remove(item.Key);
+				removed.Add(item.Key);
+			}
+		}
+		return removed;
+	}
+
+	/// <summary>读字符串属性;读不到返回 null(不像 SafeGetProperty 那样把 null 变成 "(空)",便于做路径比较)。</summary>
+	private static string TryGetString(object obj, string propertyName)
+	{
+		try
+		{
+			object v = obj.GetType().InvokeMember(propertyName, BindingFlags.GetProperty, null, obj, null);
+			return v == null ? null : Convert.ToString(v);
+		}
+		catch
+		{
+			return null;
+		}
+	}
+
+	/// <summary>判断是否绝对路径——新建未保存文档的 FullName 往往等于文档名(如"零件9"),不能当路径用。</summary>
+	private static bool IsAbsolutePath(string path)
+	{
+		if (string.IsNullOrWhiteSpace(path)) return false;
+		try { return Path.IsPathRooted(path); }
+		catch { return false; }
+	}
+
+	/// <summary>按当前文档类型猜扩展名:优先沿用现有 FullName 的扩展名,否则按 COM 类型名映射。</summary>
+	private static string GuessDocumentExtension(object doc)
+	{
+		string full = TryGetString(doc, "FullName");
+		if (!string.IsNullOrEmpty(full))
+		{
+			try
+			{
+				string ext = Path.GetExtension(full);
+				if (!string.IsNullOrEmpty(ext)) return ext;
+			}
+			catch { }
+		}
+		string typeName = TryResolveComTypeName(doc);
+		if (string.IsNullOrEmpty(typeName)) return null;
+		switch (typeName.ToLowerInvariant())
+		{
+			case "solidedgepart.partdocument": return ".par";
+			case "solidedgeassembly.assemblydocument": return ".asm";
+			case "solidedgedraft.draftdocument": return ".dft";
+			case "solidedgesheetmetal.sheetmetaldocument": return ".psm";
+			case "solidedgeweldment.weldmentdocument": return ".pwd";
+			default: return null;
+		}
+	}
+
 	private static string ListTracked()
 	{
 		if (TrackedDocs.IsEmpty)
 		{
 			return "(空)";
 		}
-		return string.Join("; ", TrackedDocs.Values.Select((TrackedDocument t) => t.FullName));
+		// Distinct:SaveAs 后会保留旧 key 作别名,同一个文档可能出现多行
+		return string.Join("; ", TrackedDocs.Values.Distinct().Select((TrackedDocument t) => t.FullName));
 	}
 
 	private static bool IsSameComObject(object a, object b)

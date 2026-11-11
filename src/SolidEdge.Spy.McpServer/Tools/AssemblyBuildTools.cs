@@ -23,34 +23,24 @@ namespace SolidEdge.Spy.McpServer.Tools
     /// ★ 诚实拒绝:角度/相切/点/齿轮约束、装配级阵列/镜像、解除压缩 —— 校验期即拦截并给替代方案(见 AssemblySpec)。
     /// </summary>
     [McpServerToolType]
-    public static class AssemblyBuildTools
+    public static partial class AssemblyBuildTools
     {
         /// <summary>关系求解正常 Status 值(L2 实测:全 1 且 Offset=0 即求解成功)。</summary>
         private const long RelationStatusOk = 1;
 
-        [McpServerTool, Description(
-            "装配批量声明式操作:一次调用完成放置零件、摆位、加约束、改属性。" +
-            "ops 每项 {\"op\":...},支持:place 放零件{file, familyMember?, matrix?[16]|origin:[x,y,z]+angles?:[度], ground?}" +
-            "(★ ground=false 放置后立即解固;默认零件带固定约束);" +
-            "move 平移{component, delta:[dx,dy,dz]};rotate 旋转{component, axis1:[x,y,z], axis2:[x,y,z], degrees}" +
-            "(轴=两点,degrees 度);transform 全量变换{component, origin, angles}(★angles 省略会把旋转归零,只挪位用 origin);" +
-            "origin 仅挪位置{component, position:[x,y,z]};visible 显示隐藏{component, value};" +
-            "ground 固定/解除固定{component, value:true|false}(value=false 删 GroundRelation3d,需 confirm);" +
-            "delete 删除{component}(需 confirm);replace 替换{component, file, all?}(需 confirm);" +
-            "reorder 调序{component, target, after?};color 上色{component, rgb:[r,g,b]};" +
-            "constrain 加约束{type:'planar'|'axial', component1, face1?, component2, face2?, mate?, keepGround?}" +
-            "(★默认自动解固 component1 的固定约束再求解——固定件上加约束不生效(2026-09-22 实测);" +
-            "component2 视为基准件、其固定不动;keepGround=true 显式保留固定(仅基准件场景,此时回传 warning);" +
-            "planar 的 mate=true=贴合(可能翻转零件180°,与轴向约束同用时给 false=共面同向);" +
-            "face1/face2=该零件 Models.Item(1).Body.Faces 全量面列表的【0-based】序号" +
-            "(上界=se_assembly_query occurrences[].faceCount;axial 两面须圆柱面);" +
-            "constrain 返回 relation_status(工具已自动 UpdateAll 后回读——直接读 Status 会因求解滞后得假成功,=1 才是真求解,0/5=冲突固死)" +
-            "与 component1_position(求解后零件位置,回读级证据),调用方无需再自行验证求解)。" +
-            "component 写法:0-based 序号 / 零件名(如 \"Par1.par:1\") / 句柄 obj-N。" +
-            "诚实拒绝(校验期拦截并给替代方案):constrain type=angular/tangent/point/gear、op=pattern/mirror/suppress/unsuppress —— " +
-            "SE2022 实测 COM 自动化不可达(部分在 SE2026 的 pywin32 通道可用,见拒绝文案)。" +
-            "★ 每个 op 建完自动验证(Count 增长/矩阵回读/关系 Status 回读),失败即中止后续;" +
-            "dryRun=true 只做静态校验不碰 COM。长度单位米,角度单位度。")]
+        [McpServerTool, Description("装配批量声明式操作:一次调用完成放置零件、摆位、加约束、改属性。\n" +
+            "op:place 放零件/move 平移/rotate 旋转/transform 全量变换/origin 挪位置/visible 显隐/" +
+            "ground 固定与解固/delete 删除/replace 替换/reorder 调序/color 上色/" +
+            "constrain 加约束(planar|axial)/rebind 修复失效面引用。\n" +
+            "硬规则:component 写 0-based 序号、零件名(如 \"Par1.par:1\")或句柄 obj-N;" +
+            "长度单位米,角度单位度;delete|replace|ground value=false 必须 confirm=true" +
+            "(本批按最高危 op 统一预检,有未确认的就整批拒绝);" +
+            "每个 op 建完自动验证、失败即中止后续,但不自动删除已产生的对象。" +
+            "constrain 默认先解固 component1(固定件上加约束不生效)、component2 视为基准件;" +
+            "face 推荐用描述符对象按几何认面,面序号会随特征增删漂移。\n" +
+            "★ 各 op 的完整字段表与示例:首次用到时自动附在返回值的 opDocs 里(同一个 op 不重复注入);" +
+            "随时可主动取 ops:[{\"op\":\"?\"}](索引)/[{\"op\":\"?\",\"name\":\"constrain\"}](单条)/" +
+            "[{\"op\":\"?\",\"topic\":\"common\"}](通用规则)。")]
         public static string se_assembly_build(
             SolidEdgeContext context,
             [Description("操作列表(JSON 数组),每项见工具描述")] JsonElement[] ops,
@@ -58,6 +48,14 @@ namespace SolidEdge.Spy.McpServer.Tools
             [Description("true=只做静态校验并返回报告,不启动 COM;默认 false")] bool dryRun = false,
             [Description("破坏性操作(delete/replace/ground value=false)的确认开关,默认 false")] bool confirm = false)
         {
+            // 手册查询:{"op":"?"}。纯字符串返回、不碰 COM,必须放在校验之前拦(否则 "?" 会被当成未知 op)。
+            string manualText;
+            if (AssemblyManual.TryQuery(ops, out manualText))
+                return manualText;
+
+            // 本批涉及、且手册收录的 op(去重)。四个出口都用它做按需注入。
+            var docOps = OpsOf(ops);
+
             // ---- 1. 静态校验(纯函数,毫秒级,不碰 COM) ----
             var report = new AssemblySpec.AssemblyReport { opCount = ops == null ? 0 : ops.Length };
             var parsed = new List<AssemblySpec.AssemblyOp>();
@@ -72,27 +70,49 @@ namespace SolidEdge.Spy.McpServer.Tools
             }
 
             if (dryRun)
-                return JsonSerializer.Serialize(new { status = "dry-run", validate = report },
-                    AssemblySpec.AssemblyReport.JsonOpts);
+            {
+                Dictionary<string, string> dryDocs;
+                string dryNote;
+                TakeDocs(docOps, out dryDocs, out dryNote);
+                return JsonSerializer.Serialize(new
+                {
+                    status = "dry-run",
+                    validate = report,
+                    opDocs = dryDocs,
+                    opDocsNote = dryNote
+                }, AssemblySpec.AssemblyReport.JsonOpts);
+            }
 
             if (report.HasError)
+            {
+                Dictionary<string, string> errDocs;
+                string errNote;
+                TakeDocs(docOps, out errDocs, out errNote);
                 return JsonSerializer.Serialize(new
                 {
                     status = "error",
                     message = "静态校验未通过(" + report.errorCount + " 个 error),未执行任何操作。按 issues[].message/fix 修正后重跑;" +
                               "标 E190 的是已实测不可用的操作(诚实拒绝),见其中的替代方案。",
-                    validate = report
+                    validate = report,
+                    opDocs = errDocs,
+                    opDocsNote = errNote
                 }, AssemblySpec.AssemblyReport.JsonOpts);
+            }
 
             // ---- 2. 只读护栏:装配批量操作全是写,只读模式整体拒绝 ----
             if (Guardrail.ReadOnlyEnabled)
             {
                 AuditLog.Write("se_assembly_build", objectId ?? "(active)", "ops", false,
                     "n=" + parsed.Count, InvocationRisk.ModelChanging, false, "blocked by guardrail");
+                Dictionary<string, string> roDocs;
+                string roNote;
+                TakeDocs(docOps, out roDocs, out roNote);
                 return JsonSerializer.Serialize(new
                 {
                     status = "error",
-                    message = "当前处于只读模式(SE_MCP_READONLY=1),装配批量操作被拒绝。"
+                    message = "当前处于只读模式(SE_MCP_READONLY=1),装配批量操作被拒绝。",
+                    opDocs = roDocs,
+                    opDocsNote = roNote
                 });
             }
 
@@ -120,19 +140,27 @@ namespace SolidEdge.Spy.McpServer.Tools
                 object occurrences = AssemblySpec.Get(doc, "Occurrences");
                 object relations = AssemblySpec.Get(doc, "Relations3d");
 
+                // 2026-10-25 审计修正:破坏性 confirm 改为执行前全量预检(原为循环内逐 op 检查,
+                // 会导致排在破坏性 op 之前的非破坏 op 先真实执行、产生"部分已执行才被拒"窗口,
+                // 与 se_invoke_chain 的"整链预扫描、一个不跑"语义不一致)。
+                // 执行前全量 confirm 预检:任一破坏性 op 未确认 → 整批拒绝,一个都不执行
+                for (int i = 0; i < parsed.Count; i++)
+                {
+                    var op = parsed[i];
+                    if (op.Destructive && !confirm)
+                    {
+                        results.Add(Err(i, op.Op, "破坏性操作(" + op.Op + ",第" + (i + 1) + "个 op)需要 confirm=true 才会执行;本批已整体拒绝,未执行任何 op。"));
+                        aborted = true;
+                        abortReason = "confirm";
+                        return;
+                    }
+                }
+
                 for (int i = 0; i < parsed.Count; i++)
                 {
                     var op = parsed[i];
                     try
                     {
-                        // 破坏性操作一律先过 confirm,并写审计
-                        if (op.Destructive && !confirm)
-                        {
-                            results.Add(Err(i, op.Op, "破坏性操作(" + op.Op + ")需要 confirm=true 才会执行。"));
-                            aborted = true;
-                            abortReason = "confirm";
-                            return;
-                        }
                         AuditLog.Write("se_assembly_build", objectId ?? "(active)", op.Op, false,
                             Summarize(op),
                             op.Destructive ? InvocationRisk.Destructive : InvocationRisk.ModelChanging,
@@ -167,6 +195,10 @@ namespace SolidEdge.Spy.McpServer.Tools
                 return JsonSerializer.Serialize(results[0], AssemblySpec.AssemblyReport.JsonOpts);
             }
 
+            Dictionary<string, string> doneDocs;
+            string doneNote;
+            TakeDocs(docOps, out doneDocs, out doneNote);
+
             return JsonSerializer.Serialize(new
             {
                 status = aborted ? "partial" : "ok",
@@ -178,8 +210,46 @@ namespace SolidEdge.Spy.McpServer.Tools
                 note = aborted
                     ? "在 " + abortReason + " 处失败,后续 op 未执行;已成功的 op 不回滚(需要撤销请显式下 delete/ground 等 op)。"
                     : null,
-                results = results
+                results = results,
+                opDocs = doneDocs,
+                opDocsNote = doneNote
             }, AssemblySpec.AssemblyReport.JsonOpts);
+        }
+
+        /// <summary>
+        /// 取本批涉及、且手册收录的 op(去重、保持出现顺序)。
+        /// 写错或已被拒绝的 op 不在手册里,直接跳过,避免往 opDocs 里塞空条目。
+        /// </summary>
+        private static List<string> OpsOf(JsonElement[] ops)
+        {
+            var list = new List<string>();
+            if (ops == null) return list;
+
+            foreach (var o in ops)
+            {
+                if (o.ValueKind != JsonValueKind.Object) continue;
+
+                JsonElement e;
+                if (!o.TryGetProperty("op", out e) || e.ValueKind != JsonValueKind.String) continue;
+
+                var op = (e.GetString() ?? "").Trim().ToLowerInvariant();
+                if (!AssemblyManual.Has(op)) continue;
+                if (list.Contains(op)) continue;
+                list.Add(op);
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// 按需注入:本批新出现的 op 才发手册(每个 op 一次),之后只留一行指针。
+        /// 没有新内容时 opDocs 置 null,序列化为 "opDocs":null,不占实质空间。
+        /// </summary>
+        private static void TakeDocs(List<string> docOps,
+            out Dictionary<string, string> opDocs, out string opDocsNote)
+        {
+            opDocs = OpDocRegistry.TakeUnsent(AssemblyManual.Domain, AssemblyManual.Entries, docOps);
+            opDocsNote = OpDocRegistry.Note(docOps, opDocs.Keys, AssemblyManual.ArgName);
+            if (opDocs.Count == 0) opDocs = null;
         }
 
         // ================= 各 op 执行 =================
@@ -201,6 +271,7 @@ namespace SolidEdge.Spy.McpServer.Tools
                 case "reorder": return OpReorder(context, occurrences, op);
                 case "color": return OpColor(context, doc, occurrences, op);
                 case "constrain": return OpConstrain(context, doc, relations, op);
+                case "rebind": return OpRebind(context, doc, relations, op);
                 default: return Err(op.Index, op.Op, "内部错误:op " + op.Op + " 未分发。");
             }
         }
@@ -356,6 +427,43 @@ namespace SolidEdge.Spy.McpServer.Tools
         {
             object occ = Resolve(context, occurrences, op.CompRef, op.Index, "transform");
             if (occ is string err) return Err(op.Index, "transform", err);
+
+            // 矩阵入口:origin+angles 的 Euler 组合表达不了斜置姿态(本机 Rotate 还 E_FAIL),
+            // 而矩阵是 SE 原生姿态表示——16 元素行主序,平移在 [12..14](米),直接 PutMatrix。
+            if (op.Matrix != null && op.Matrix.Length == 16)
+            {
+                var occTyped = (SolidEdgeAssembly.Occurrence)occ;
+                Array mat = Array.CreateInstance(typeof(double), 16);
+                for (int k = 0; k < 16; k++) mat.SetValue(op.Matrix[k], k);
+                occTyped.PutMatrix(ref mat, true);      // Replace=true:给的是绝对姿态
+
+                double[] afterM = AssemblySpec.ReadMatrix(occ);
+                if (afterM == null)
+                    return Warn(op.Index, "transform", "矩阵回读失败,无法核对结果。",
+                        new Dictionary<string, object> { ["op"] = "transform", ["verify"] = "not-verified" });
+                // 容差放 1e-9(千分之一微米):PutMatrix 回读会有末位归一化误差,1e-12 会误报。
+                bool sameEnough = true;
+                for (int k = 0; k < 16; k++)
+                {
+                    if (Math.Abs(op.Matrix[k] - afterM[k]) > 1e-9) { sameEnough = false; break; }
+                }
+                if (!sameEnough)
+                {
+                    // 回读值原样吐出来,调用方一眼能看出是"没动"还是"被归一化/转了置"。
+                    var parts = new string[16];
+                    for (int k = 0; k < 16; k++)
+                        parts[k] = Math.Round(afterM[k], 6).ToString(CultureInfo.InvariantCulture);
+                    return Err(op.Index, "transform",
+                        "PutMatrix 后回读矩阵与给定矩阵不符(零件可能是固定件;或矩阵不是行主序)。回读值: "
+                        + string.Join(",", parts));
+                }
+                return Ok("transform", new Dictionary<string, object>
+                {
+                    ["mode"] = "matrix",
+                    ["position"] = Slice(afterM, 12, 3),
+                    ["verified"] = true
+                });
+            }
 
             TransformOcc(occ, op.Position, op.Angles);
             double[] after = AssemblySpec.ReadMatrix(occ);
@@ -614,12 +722,12 @@ namespace SolidEdge.Spy.McpServer.Tools
             int before = GetCount(relations);
 
             // 约束必须用 CreateReference 包裹零件面(直传零件文档的面报 0x80040225,来源项目实测)
-            object faceRef1 = BuildFaceReference(doc, occ1, op.Face1, op.ConstrainType == "axial", op.Index, "face1");
-            if (faceRef1 is string e1) return Err(op.Index, "constrain", e1);
-            object faceRef2 = BuildFaceReference(doc, occ2, op.Face2, op.ConstrainType == "axial", op.Index, "face2");
-            if (faceRef2 is string e2) return Err(op.Index, "constrain", e2);
-            var r1 = (Tuple<object, double[]>)faceRef1;
-            var r2 = (Tuple<object, double[]>)faceRef2;
+            object bind1 = BuildFaceBinding(context, doc, occ1, op.Face1Ref, op.ConstrainType == "axial", op.Index, "face1");
+            if (bind1 is string e1) return Err(op.Index, "constrain", e1);
+            object bind2 = BuildFaceBinding(context, doc, occ2, op.Face2Ref, op.ConstrainType == "axial", op.Index, "face2");
+            if (bind2 is string e2) return Err(op.Index, "constrain", e2);
+            var r1 = (FaceBinding)bind1;
+            var r2 = (FaceBinding)bind2;
 
             var rels = relations as SolidEdgeAssembly.Relations3d;
             object relation;
@@ -629,23 +737,23 @@ namespace SolidEdge.Spy.McpServer.Tools
                 // NormalsAligned=true=mated 贴合 / false=aligned 共面同向(离线文档 Parameters + 合页实测)
                 if (rels != null)
                 {
-                    Array cp1 = ToArray(r1.Item2);
-                    Array cp2 = ToArray(r2.Item2);
-                    relation = rels.AddPlanar(r1.Item1, r2.Item1, op.Mate, ref cp1, ref cp2);
+                    Array cp1 = ToArray(r1.MidM);
+                    Array cp2 = ToArray(r2.MidM);
+                    relation = rels.AddPlanar(r1.Reference, r2.Reference, op.Mate, ref cp1, ref cp2);
                 }
                 else
                 {
                     relation = AssemblySpec.Call(relations, "AddPlanar",
-                        new object[] { r1.Item1, r2.Item1, op.Mate, r1.Item2, r2.Item2 });
+                        new object[] { r1.Reference, r2.Reference, op.Mate, r1.MidM, r2.MidM });
                 }
             }
             else
             {
                 // AddAxial(Axis1, Axis2, NormalsAligned)——两面须圆柱面(构建 Reference 时已校验)
                 if (rels != null)
-                    relation = rels.AddAxial(r1.Item1, r2.Item1, op.Mate);
+                    relation = rels.AddAxial(r1.Reference, r2.Reference, op.Mate);
                 else
-                    relation = AssemblySpec.Call(relations, "AddAxial", new object[] { r1.Item1, r2.Item1, op.Mate });
+                    relation = AssemblySpec.Call(relations, "AddAxial", new object[] { r1.Reference, r2.Reference, op.Mate });
             }
 
             int after = GetCount(relations);
@@ -663,7 +771,10 @@ namespace SolidEdge.Spy.McpServer.Tools
             {
                 ["type"] = op.ConstrainType,
                 ["mate"] = op.Mate,
-                ["relations"] = after
+                ["relations"] = after,
+                // 实际绑到哪张面:序号会随特征增删漂移,回显是为了"绑错了至少看得见"
+                ["face1_bound"] = BindingEcho(r1),
+                ["face2_bound"] = BindingEcho(r2)
             };
             if (autoUngrounded != null)
                 extra["auto_ungrounded"] = autoUngrounded;   // 已自动删掉 component1 的固定,求解才会真挪零件
@@ -678,7 +789,11 @@ namespace SolidEdge.Spy.McpServer.Tools
                 {
                     extra["diagnosis"] = "relation_status=" + status + "(正常=" + RelationStatusOk + ")。常见原因:①零件还带 Ground 固定关系"
                         + "(先 ground value=false);②planar 的 mate=true 触发 180° 翻转与已有轴向约束冲突(改 mate=false);③两面不满足几何条件。";
-                    return Err(op.Index, "constrain", "约束已创建但未求解: " + extra["diagnosis"]);
+                    // 求解失败时也把"实际绑到哪张面"带出来 —— 否则分不清是几何冲突还是绑错面
+                    var errDict = Err(op.Index, "constrain", "约束已创建但未求解: " + extra["diagnosis"]);
+                    errDict["face1_bound"] = extra["face1_bound"];
+                    errDict["face2_bound"] = extra["face2_bound"];
+                    return errDict;
                 }
             }
             object offset = AssemblySpec.Get(relation, "Offset");
@@ -690,12 +805,28 @@ namespace SolidEdge.Spy.McpServer.Tools
         }
 
         /// <summary>
-        /// 取零件面并包成装配 Reference,返回 (Reference, 约束点)。
-        /// 链路:occ → OccurrenceDocument → Models.Item(1) → Body.Faces(1=igQueryAll) → Item(face+1)
-        /// → doc.CreateReference(occ, face);约束点 = 面包围盒中点(零件坐标,合页实测可用)。
+        /// 一次约束绑面的结果:Reference + 约束点 + 这张面的"身份证"(回显给调用方核对)。
         /// </summary>
-        private static object BuildFaceReference(object doc, object occ, int faceIndex, bool needCylindrical,
-            int opIndex, string field)
+        private sealed class FaceBinding
+        {
+            public object Reference;
+            public double[] MidM;          // 约束点(米)
+            public string Source;          // index / selector / handle / geometry(rebind 按几何认面)
+            public FaceInfo Info;          // 绑到的面(序号/ID/类型/直径/位置)
+            public string Note;            // 需要告诉调用方的补充说明(如"多张等价面,已取第一张")
+        }
+
+        /// <summary>
+        /// 取零件面并包成装配 Reference。
+        /// 链路:occ → OccurrenceDocument → Models.Item(1) → Body 全量面表(FaceFinder,与 se_find_objects 同一条链)
+        /// → 按序号/描述符/句柄定位 → doc.CreateReference(occ, face);约束点 = 面包围盒中点(米)。
+        ///
+        /// 为什么不再只用序号(2026-10-25 P1):零件加/删特征后 Body.Faces 序号整体漂移,
+        /// 同一条装配配方重跑会**静默绑到另一张面**上。描述符按几何认面,不随序号漂移;
+        /// 不管走哪条路,返回值都回显"实际绑到了哪张面",让漂移至少可见。
+        /// </summary>
+        private static object BuildFaceBinding(SolidEdgeContext context, object doc, object occ, object faceRef,
+            bool needCylindrical, int opIndex, string field)
         {
             object part = AssemblySpec.Get(occ, "OccurrenceDocument");
             if (part == null) return "取不到 OccurrenceDocument。";
@@ -704,45 +835,127 @@ namespace SolidEdge.Spy.McpServer.Tools
             if (modelCount < 1) return "零件文档没有 Models(无实体),取不了面。";
             object model = AssemblySpec.Call(models, "Item", new object[] { 1 });
             object body = AssemblySpec.Get(model, "Body");
-            if (body == null) return "Model.Body 取不到。";
-            object faces = AssemblySpec.Call(body, "Faces", new object[] { 1 });   // 1 = igQueryAll
-            int faceCount = GetCount(faces);
-            if (faceIndex < 0 || faceIndex >= faceCount)
-                return field + "=" + faceIndex + " 越界:该零件 Body 有 " + faceCount + " 个面(0-based)。用 se_batch_read 或模型特征名定位面序号。";
-            object face = AssemblySpec.Call(faces, "Item", new object[] { faceIndex + 1 });
 
-            if (needCylindrical)
+            string err;
+            List<ModelStateTools.FaceRow> rows = FaceFinder.ReadAllFaces(body, out err);
+            if (err != null) return err;
+
+            var binding = new FaceBinding();
+            FaceInfo hit = null;
+
+            if (faceRef is int index)
             {
-                object geom = AssemblySpec.Get(face, "Geometry");
-                object radius = geom == null ? null : AssemblySpec.Get(geom, "Radius");
-                if (radius == null)
-                    return field + "=" + faceIndex + " 不是圆柱面——axial 约束两面都必须是圆柱面(来源项目与合页实测一致)。";
+                if (index < 0 || index >= rows.Count)
+                    return field + "=" + index + " 越界:该零件 Body 有 " + rows.Count + " 个面(0-based)。"
+                        + "（序号会随特征增删漂移,建议改用描述符,如 " + field + ":{\"type\":\"cylinder\",\"diaMm\":89}）";
+                hit = FaceFinder.ByIndex(rows, index);
+                if (hit == null) return field + "=" + index + " 这张面的包围盒读不到,给不出约束点。";
+                binding.Source = "index";
             }
+            else if (faceRef is string handle && handle.StartsWith("obj-", StringComparison.OrdinalIgnoreCase))
+            {
+                var h = context.GetHandle(handle);
+                if (h == null || h.ComObject == null)
+                    return "面句柄 " + handle + " 无效或已失效(句柄表会随文档切换/选择刷新),请重新用 se_find_objects 取。";
+                hit = FaceFinder.ByComFace(rows, h.ComObject);
+                if (hit == null)
+                    return "面句柄 " + handle + " 指向的面不在这个零件的 Body 里(可能来自别的文档或已过期),"
+                        + "请用 se_find_objects 重新取,或改用描述符。";
+                binding.Source = "handle";
+            }
+            else if (faceRef is FaceSelector sel)
+            {
+                int scanned;
+                List<FaceInfo> hits = FaceFinder.Filter(rows, sel, out scanned);
+                if (hits.Count == 0)
+                    return field + " 描述符没命中任何面(" + sel.Describe() + ")。扫了 " + scanned + " 张面,"
+                        + "这个零件的面清单: " + DescribeCandidates(FaceFinder.Filter(rows, new FaceSelector(), out scanned), 12)
+                        + " → 按清单改 diaMm/atMm/normal,或放宽 tolMm(当前 " + sel.TolMm + "mm)。";
+                if (hits.Count > 1)
+                    return field + " 描述符命中了 " + hits.Count + " 张面(" + sel.Describe() + "),装配约束必须唯一命中:"
+                        + DescribeCandidates(hits, 8)
+                        + " → 加 atMm(包围盒中心)/lenMm(轴向长度)缩小范围,或用 se_find_objects 拿 handle 后传 \"obj-N\"。";
+                hit = hits[0];
+                binding.Source = "selector";
+            }
+            else
+            {
+                return field + " 引用无效(要 0-based 序号 / 描述符 / 面句柄)。";
+            }
+
+            object face = hit.ComFace;
+            if (needCylindrical && !string.Equals(hit.Type, "Cylinder", StringComparison.OrdinalIgnoreCase))
+                return field + " 绑到的面是 " + hit.Type + "(面 " + hit.Index + " / FaceID " + hit.FaceId + "),"
+                    + "axial 约束两面都必须是圆柱面(来源项目与合页实测一致)。";
 
             // 约束点:面包围盒中点。官方写法:强类型 Face.GetRange(ref min, ref max)
-            double[] mid = null;
-            try
+            double[] mid = hit.CenterM;
+            if (mid == null)
             {
-                var f = (SolidEdgeGeometry.Face)face;
-                Array minPt = Array.CreateInstance(typeof(double), 0);
-                Array maxPt = Array.CreateInstance(typeof(double), 0);
-                f.GetRange(ref minPt, ref maxPt);
-                if (minPt.Length >= 3 && maxPt.Length >= 3)
+                try
                 {
-                    mid = new[]
+                    var f = (SolidEdgeGeometry.Face)face;
+                    Array minPt = Array.CreateInstance(typeof(double), 0);
+                    Array maxPt = Array.CreateInstance(typeof(double), 0);
+                    f.GetRange(ref minPt, ref maxPt);
+                    if (minPt.Length >= 3 && maxPt.Length >= 3)
                     {
-                        (Convert.ToDouble(minPt.GetValue(0), CultureInfo.InvariantCulture) + Convert.ToDouble(maxPt.GetValue(0), CultureInfo.InvariantCulture)) / 2,
-                        (Convert.ToDouble(minPt.GetValue(1), CultureInfo.InvariantCulture) + Convert.ToDouble(maxPt.GetValue(1), CultureInfo.InvariantCulture)) / 2,
-                        (Convert.ToDouble(minPt.GetValue(2), CultureInfo.InvariantCulture) + Convert.ToDouble(maxPt.GetValue(2), CultureInfo.InvariantCulture)) / 2
-                    };
+                        mid = new[]
+                        {
+                            (Convert.ToDouble(minPt.GetValue(0), CultureInfo.InvariantCulture) + Convert.ToDouble(maxPt.GetValue(0), CultureInfo.InvariantCulture)) / 2,
+                            (Convert.ToDouble(minPt.GetValue(1), CultureInfo.InvariantCulture) + Convert.ToDouble(maxPt.GetValue(1), CultureInfo.InvariantCulture)) / 2,
+                            (Convert.ToDouble(minPt.GetValue(2), CultureInfo.InvariantCulture) + Convert.ToDouble(maxPt.GetValue(2), CultureInfo.InvariantCulture)) / 2
+                        };
+                    }
                 }
+                catch { }
             }
-            catch { }
             if (mid == null) return "面包围盒(GetRange)读不到,给不出约束点。";
 
             object reference = AssemblySpec.Call(doc, "CreateReference", new object[] { occ, face });
             if (reference == null) return "CreateReference 返回空。";
-            return Tuple.Create(reference, mid);
+            binding.Reference = reference;
+            binding.MidM = mid;
+            binding.Info = hit;
+            return binding;
+        }
+
+        /// <summary>绑面回显:实际绑的是哪张面 + 怎么定位的 + 约束点(mm)。</summary>
+        private static Dictionary<string, object> BindingEcho(FaceBinding b)
+        {
+            var d = (b.Info != null) ? b.Info.ToEcho() : new Dictionary<string, object>();
+            d["source"] = b.Source;
+            if (!string.IsNullOrEmpty(b.Note)) d["note"] = b.Note;
+            if (b.MidM != null)
+            {
+                d["pointMm"] = new[]
+                {
+                    Math.Round(b.MidM[0] * 1000.0, 3),
+                    Math.Round(b.MidM[1] * 1000.0, 3),
+                    Math.Round(b.MidM[2] * 1000.0, 3)
+                };
+            }
+            return d;
+        }
+
+        /// <summary>"face1 命中了 3 张面: [0] cylinder dia=89 at=0,0,10 …" —— 让调用方一眼看出该加什么条件。</summary>
+        private static string DescribeCandidates(List<FaceInfo> faces, int max)
+        {
+            if (faces == null || faces.Count == 0) return "(空)";
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < faces.Count && i < max; i++)
+            {
+                FaceInfo f = faces[i];
+                sb.Append(i == 0 ? "" : " | ");
+                sb.Append("[").Append(f.Index).Append("] ").Append(f.Type);
+                if (f.DiaMm.HasValue) sb.Append(" dia=").Append(Math.Round(f.DiaMm.Value, 2));
+                if (f.CenterMm != null)
+                    sb.Append(" at=").Append(FaceSelector.VectorText(f.CenterMm));
+                if (f.Normal != null)
+                    sb.Append(" n=").Append(FaceSelector.VectorText(f.Normal));
+            }
+            if (faces.Count > max) sb.Append(" …(共 ").Append(faces.Count).Append(" 张)");
+            return sb.ToString();
         }
 
         // ================= 通用辅助 =================

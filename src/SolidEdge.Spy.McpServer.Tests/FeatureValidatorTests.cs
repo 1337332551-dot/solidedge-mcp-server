@@ -197,6 +197,36 @@ namespace SolidEdge.Spy.McpServer.Tests
             Assert.True(HasCode(r, "E203"));
         }
 
+        [Theory]
+        [InlineData("face:+Z:outer")]
+        [InlineData("face:-X:inner")]
+        [InlineData("face:+Z:@0,0,0.057")]
+        public void PlaneFace_ExtendedSelectors_NoE203(string plane)
+        {
+            // 2026-10-23 新写法(极值 / 点定位)在静态校验层必须放行——校验层只查格式,查不了几何
+            var r = V(@"[{""op"":""extrude"",""plane"":""" + plane + @""",""circle"":[0,0,0.01],""depth"":0.005}]");
+            Assert.False(HasCode(r, "E203"));
+        }
+
+        [Theory]
+        [InlineData("face:@0,0,0.057")]        // 缺轴:方向不唯一
+        [InlineData("face:+Z:middle")]         // 后缀非法
+        [InlineData("face:+Z:@0,0")]           // 缺一维
+        public void PlaneFace_ExtendedSelectorsBad_E203(string plane)
+        {
+            var r = V(@"[{""op"":""extrude"",""plane"":""" + plane + @""",""circle"":[0,0,0.01],""depth"":0.005}]");
+            Assert.True(HasCode(r, "E203"));
+        }
+
+        [Fact]
+        public void PlaneFace_PointWithCoordsLocal_E203()
+        {
+            // 点是世界坐标 vs local 要面局部 u/v → 语义冲突,必须拦
+            var r = V(@"[{""op"":""extrude"",""plane"":""face:+Z:@0,0,0.057"",""coords"":""local""," +
+                      @"""circle"":[0,0,0.01],""depth"":0.005}]");
+            Assert.True(HasCode(r, "E203"));
+        }
+
         [Fact]
         public void PlaneFace_WithDir_W409()
         {
@@ -461,28 +491,159 @@ namespace SolidEdge.Spy.McpServer.Tests
         [Fact]
         public void Pattern_Valid_Ok()
         {
-            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":3,""xspacing"":0.05}]");
+            // 2026-10-23:pattern 开放圆周阵列——of + plane + count(整圈均布 fit 为默认)
+            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":6}]");
+            Assert.Equal("ok", r.status);
+        }
+
+        [Fact]
+        public void Pattern_Valid_FixedSpacing_Ok()
+        {
+            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":4,""center"":[0.01,0.01],""spacingDeg"":30,""clockwise"":true,""patterntype"":""fast""}]");
             Assert.Equal("ok", r.status);
         }
 
         [Fact]
         public void Pattern_MissingOf_E408()
         {
-            var r = V("[" + Plate + @",{""op"":""pattern"",""plane"":""RefPlane_1"",""xcount"":3,""xspacing"":0.05}]");
+            var r = V("[" + Plate + @",{""op"":""pattern"",""plane"":""RefPlane_1"",""count"":3}]");
             Assert.True(HasCode(r, "E408"));
         }
 
         [Fact]
-        public void Pattern_BothCountsOne_E408()
+        public void Pattern_MissingCount_E408()
         {
-            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":1,""ycount"":1,""xspacing"":0.05,""yspacing"":0.05}]");
+            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1""}]");
             Assert.True(HasCode(r, "E408"));
         }
 
         [Fact]
-        public void Pattern_CountWithoutSpacing_E408()
+        public void Pattern_CountTooSmall_E408()
         {
-            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":3}]");
+            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":1}]");
+            Assert.True(HasCode(r, "E408"));
+        }
+
+        [Fact]
+        public void Pattern_RectFieldsWithoutKind_GuidedToRect_E408()
+        {
+            // 2026-11-08:矩形阵列开放(kind:"rect")——rect 字段出现但没加 kind → E408 引导(不再引导改圆周)
+            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":3,""xcount"":3,""xspacing"":0.05}]");
+            Assert.True(HasCode(r, "E408"));
+        }
+
+        [Fact]
+        public void Pattern_Rect_Valid_Ok()
+        {
+            // 矩形阵列正例:xcount/ycount/xspacing/yspacing 全给
+            var r = V("[" + Plate + @",{""op"":""pattern"",""kind"":""rect"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":3,""ycount"":3,""xspacing"":0.015,""yspacing"":0.015,""center"":[0.03,0.02]}]");
+            Assert.Equal("ok", r.status);
+            Assert.Equal(0, r.errorCount);
+        }
+
+        [Fact]
+        public void Pattern_Rect_SingleRowColumn_Ok()
+        {
+            // 单行/单列(count=1 语义在矩形是合法的)
+            var r = V("[" + Plate + @",{""op"":""pattern"",""kind"":""rect"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":4,""ycount"":1,""xspacing"":0.02,""yspacing"":0.015}]");
+            Assert.Equal("ok", r.status);
+            var r2 = V("[" + Plate + @",{""op"":""pattern"",""kind"":""rect"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":1,""ycount"":3,""xspacing"":0.02,""yspacing"":0.015}]");
+            Assert.Equal("ok", r2.status);
+        }
+
+        [Fact]
+        public void Pattern_Rect_MissingCounts_E408()
+        {
+            Assert.True(HasCode(V("[" + Plate + @",{""op"":""pattern"",""kind"":""rect"",""of"":""plate"",""plane"":""RefPlane_1"",""ycount"":3,""xspacing"":0.015,""yspacing"":0.015}]"), "E408"));
+            Assert.True(HasCode(V("[" + Plate + @",{""op"":""pattern"",""kind"":""rect"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":0,""ycount"":3,""xspacing"":0.015,""yspacing"":0.015}]"), "E408"));
+        }
+
+        [Fact]
+        public void Pattern_Rect_MissingSpacing_E408()
+        {
+            Assert.True(HasCode(V("[" + Plate + @",{""op"":""pattern"",""kind"":""rect"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":3,""ycount"":3}]"), "E408"));
+            Assert.True(HasCode(V("[" + Plate + @",{""op"":""pattern"",""kind"":""rect"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":3,""ycount"":3,""xspacing"":0.015,""yspacing"":0}]"), "E408"));
+        }
+
+        [Fact]
+        public void Pattern_Rect_CircularFieldsRejected_E408()
+        {
+            // 圆周专用字段(count/spacing/clockwise)误入 rect → E408 显式引导
+            var r = V("[" + Plate + @",{""op"":""pattern"",""kind"":""rect"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":3,""ycount"":3,""xspacing"":0.015,""yspacing"":0.015,""count"":6,""spacing"":""fit""}]");
+            Assert.True(HasCode(r, "E408"));
+        }
+
+        [Fact]
+        public void Pattern_Rect_SuppressValid_Ok()
+        {
+            var r = V("[" + Plate + @",{""op"":""pattern"",""kind"":""rect"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":3,""ycount"":3,""xspacing"":0.015,""yspacing"":0.015,""suppress"":[5,9]}]");
+            Assert.Equal("ok", r.status);
+        }
+
+        [Fact]
+        public void Pattern_Rect_SuppressOutOfRange_E408()
+        {
+            // 3×3=9:序号 10 越界
+            var r = V("[" + Plate + @",{""op"":""pattern"",""kind"":""rect"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":3,""ycount"":3,""xspacing"":0.015,""yspacing"":0.015,""suppress"":[10]}]");
+            Assert.True(HasCode(r, "E408"));
+        }
+
+        [Fact]
+        public void Pattern_Rect_SuppressNonInteger_E408()
+        {
+            var r = V("[" + Plate + @",{""op"":""pattern"",""kind"":""rect"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":3,""ycount"":3,""xspacing"":0.015,""yspacing"":0.015,""suppress"":[5,""abc""]}]");
+            Assert.True(HasCode(r, "E408"));
+        }
+
+        [Fact]
+        public void Pattern_Rect_NonZeroAngle_E408()
+        {
+            // angle≠0 语义未破解(2026-11-08 真机单点实测 angle=15° → +X 实例落在 229.4°)→ E408 拒绝
+            var r = V("[" + Plate + @",{""op"":""pattern"",""kind"":""rect"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":3,""ycount"":3,""xspacing"":0.015,""yspacing"":0.015,""angle"":15}]");
+            Assert.True(HasCode(r, "E408"));
+        }
+
+        [Fact]
+        public void Pattern_BadKind_E408()
+        {
+            var r = V("[" + Plate + @",{""op"":""pattern"",""kind"":""rectangular"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":3}]");
+            Assert.True(HasCode(r, "E408"));
+        }
+
+        [Fact]
+        public void Pattern_SpacingModeConflict_E408()
+        {
+            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":3,""spacing"":""fit"",""spacingDeg"":30}]");
+            Assert.True(HasCode(r, "E408"));
+        }
+
+        [Fact]
+        public void Pattern_NumericSpacing_E408()
+        {
+            // spacing 给数字(单位歧义)→ E408,要求改 spacingDeg
+            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":3,""spacing"":30}]");
+            Assert.True(HasCode(r, "E408"));
+        }
+
+        [Fact]
+        public void Pattern_SpacingDegOutOfRange_E408()
+        {
+            Assert.True(HasCode(V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":3,""spacingDeg"":0}]"), "E408"));
+            Assert.True(HasCode(V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":3,""spacingDeg"":360}]"), "E408"));
+            Assert.True(HasCode(V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":3,""spacingDeg"":-30}]"), "E408"));
+        }
+
+        [Fact]
+        public void Pattern_BadPatternType_E408()
+        {
+            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":3,""patterntype"":""turbo""}]");
+            Assert.True(HasCode(r, "E408"));
+        }
+
+        [Fact]
+        public void Pattern_ZeroRadius_E408()
+        {
+            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":3,""radius"":0}]");
             Assert.True(HasCode(r, "E408"));
         }
 
@@ -490,7 +651,7 @@ namespace SolidEdge.Spy.McpServer.Tests
         public void Pattern_UnknownOfRef_W408()
         {
             // of 不是 obj- 且本批之前无同名 name → W408 提醒(不拦 error)
-            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""NoName"",""plane"":""RefPlane_1"",""xcount"":3,""xspacing"":0.05}]");
+            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""NoName"",""plane"":""RefPlane_1"",""count"":3}]");
             Assert.Equal(0, r.errorCount);
             Assert.True(HasCode(r, "W408"));
         }
@@ -498,7 +659,7 @@ namespace SolidEdge.Spy.McpServer.Tests
         [Fact]
         public void Pattern_KnownOfRef_NoW408()
         {
-            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":3,""xspacing"":0.05}]");
+            var r = V("[" + Plate + @",{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":3}]");
             Assert.False(HasCode(r, "W408"));
         }
 
@@ -508,7 +669,7 @@ namespace SolidEdge.Spy.McpServer.Tests
             var r = V("[" + Plate + @",{""op"":""fillet"",""radius"":0.002,""edges"":[{""face"":""face:71"",""edge"":0}]}," +
                      @"{""op"":""chamfer"",""distance"":0.002,""edges"":[{""face"":""face:71"",""edge"":1}]}," +
                      @"{""op"":""rib"",""plane"":""RefPlane_1"",""polygon"":[[0,0],[0.01,0],[0.01,0.01],[0,0.01]],""thickness"":0.003}," +
-                     @"{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""xcount"":3,""xspacing"":0.05}]");
+                     @"{""op"":""pattern"",""of"":""plate"",""plane"":""RefPlane_1"",""count"":6}]");
             Assert.False(HasCode(r, "E101"));
             Assert.Equal(5, r.featureCount);
         }
@@ -1166,6 +1327,458 @@ namespace SolidEdge.Spy.McpServer.Tests
             // extrude_surface 缺形状(无 rect/circle/polygon/loops)→ E102(已扩进 RequiredShapeRule)
             var r = V(@"[{""op"":""extrude_surface"",""plane"":""RefPlane_1"",""depth"":0.01}]");
             Assert.True(HasCode(r, "E102"));
+        }
+
+        // ---------- loft_surface / thicken side(2026-10-31 曲面链路复核) ----------
+
+        [Fact]
+        public void LoftSurface_NotE101_HappyPath()
+        {
+            // loft_surface 进 op 白名单 → 不报 E101;两个截面 → 无 E410
+            var r = V(@"[{""op"":""loft_surface"",""name"":""sf1"",""profiles"":[" +
+                    @"{""plane"":""RefPlane_1"",""rect"":[[-0.03,-0.03],[0.03,0.03]]}," +
+                    @"{""plane"":""RefPlane_1"",""rect"":[[-0.015,-0.015],[0.015,0.015]]}]}]");
+            Assert.False(HasCode(r, "E101"));
+            Assert.False(HasCode(r, "E410"));
+        }
+
+        [Fact]
+        public void SplineSection_LoftSurface_NoShapeError()
+        {
+            // 真样条截面:loft_surface 不该报 E102/E410
+            var r = V(@"[{""op"":""loft_surface"",""name"":""sf1"",""profiles"":[" +
+                    @"{""plane"":""@p1"",""spline"":{""points"":[[-0.031,0],[-0.025,0.022],[0,0.038],[0.025,0.022],[0.031,0]],""order"":3,""closed"":true}}," +
+                    @"{""plane"":""@p2"",""spline"":{""points"":[[-0.020,0],[-0.016,0.014],[0,0.024],[0.016,0.014],[0.020,0]],""order"":3,""closed"":true}}]}," +
+                    @"{""op"":""plane"",""name"":""p2"",""base"":""RefPlane_2"",""distance"":0.03}]");
+            Assert.False(HasCode(r, "E102"));
+            Assert.False(HasCode(r, "E410"));
+        }
+
+        [Fact]
+        public void SplineSection_TooFewPoints_E102()
+        {
+            // 2 个点建不出样条 → ShapeError → extrude_surface 报 E102
+            var r = V(@"[{""op"":""extrude_surface"",""plane"":""RefPlane_1"",""depth"":0.01," +
+                    @"""spline"":[[0,0],[0.01,0]]}]");
+            Assert.True(HasCode(r, "E102"));
+        }
+
+        [Fact]
+        public void LoftSurface_WithGuides_NoError()
+        {
+            // 导线:开放样条轮廓,plane 必填
+            var r = V(@"[{""op"":""loft_surface"",""name"":""sf1"",""profiles"":[" +
+                    @"{""plane"":""RefPlane_2"",""spline"":{""points"":[[-0.02,0],[-0.016,0.02],[0,0.026],[0.016,0.02],[0.02,0]],""closed"":true}}," +
+                    @"{""plane"":""@p2"",""spline"":{""points"":[[-0.012,0],[-0.01,0.012],[0,0.016],[0.01,0.012],[0.012,0]],""closed"":true}}]," +
+                    @"""guides"":[{""plane"":""obj-9"",""spline"":[[0,0.026],[0.03,0.05],[0.06,0.016]]}]}," +
+                    @"{""op"":""plane"",""name"":""p2"",""base"":""RefPlane_2"",""distance"":0.06}]");
+            Assert.False(HasCode(r, "E410"));
+        }
+
+        [Fact]
+        public void LoftSurface_ClosedGuide_E410()
+        {
+            // 导线不允许闭合
+            var r = V(@"[{""op"":""loft_surface"",""profiles"":[" +
+                    @"{""plane"":""RefPlane_2"",""circle"":[0,0,0.02]}," +
+                    @"{""plane"":""RefPlane_2"",""circle"":[0,0,0.01]}]," +
+                    @"""guides"":[{""plane"":""obj-9"",""spline"":{""points"":[[0,0.026],[0.03,0.05],[0.06,0.016]],""closed"":true}}]}]");
+            Assert.True(HasCode(r, "E410"));
+        }
+
+        [Fact]
+        public void LoftSurface_SingleSection_E410()
+        {
+            // 只有一个截面 → E410(LoftRule 已扩到 loft_surface)
+            var r = V(@"[{""op"":""loft_surface"",""profiles"":[" +
+                    @"{""plane"":""RefPlane_1"",""rect"":[[-0.03,-0.03],[0.03,0.03]]}]}]");
+            Assert.True(HasCode(r, "E410"));
+        }
+
+        [Fact]
+        public void Thicken_SideOutside1To3_E416()
+        {
+            // side 是 FeaturePropertyConstants(1/2/3);4/5 是拔模用的,静态层就拦
+            var r = V(@"[{""op"":""extrude_surface"",""name"":""s1"",""plane"":""RefPlane_1""," +
+                    @"""rect"":[[-0.01,-0.01],[0.01,0.01]],""depth"":0.01}," +
+                    @"{""op"":""thicken"",""name"":""t1"",""faceOf"":""@s1"",""thickness"":0.0015,""side"":5}]");
+            Assert.True(HasCode(r, "E416"));
+        }
+
+        [Fact]
+        public void Thicken_Side1_NoE416()
+        {
+            var r = V(@"[{""op"":""extrude_surface"",""name"":""s1"",""plane"":""RefPlane_1""," +
+                    @"""rect"":[[-0.01,-0.01],[0.01,0.01]],""depth"":0.01}," +
+                    @"{""op"":""thicken"",""name"":""t1"",""faceOf"":""@s1"",""thickness"":0.0015,""side"":1}]");
+            Assert.False(HasCode(r, "E416"));
+        }
+
+        // ---------- spline3d / arc3d / openProfile(2026-11-02) ----------
+
+        [Fact]
+        public void Spline3D_Ok()
+        {
+            // 3D 曲线不进平面草图:不需要 plane,也不该报 E101/E420
+            var r = V(@"[{""op"":""spline3d"",""name"":""g1""," +
+                    @"""points"":[[0,0,0],[0.03,0.02,0.015],[0.06,-0.01,0.02]]}]");
+            Assert.False(HasCode(r, "E101"));
+            Assert.False(HasCode(r, "E420"));
+            Assert.False(HasCode(r, "W102"));
+        }
+
+        [Fact]
+        public void Spline3D_OnePoint_E420()
+        {
+            var r = V(@"[{""op"":""spline3d"",""points"":[[0,0,0]]}]");
+            Assert.True(HasCode(r, "E420"));
+        }
+
+        [Fact]
+        public void Spline3D_BadPoint_E420()
+        {
+            // 点的维数不是 3 → 静态层就报,不用等 COM 报错
+            var r = V(@"[{""op"":""spline3d"",""points"":[[0,0],[0.01,0,0]]}]");
+            Assert.True(HasCode(r, "E420"));
+        }
+
+        [Fact]
+        public void Arc3D_Ok()
+        {
+            // 半圆 R20:起点/终点到圆心都是 0.02 → 半径自洽,不需要给 radius
+            var r = V(@"[{""op"":""arc3d"",""start"":[-0.02,0,0],""end"":[0.02,0,0],""center"":[0,0,0]}]");
+            Assert.False(HasCode(r, "E420"));
+            Assert.Equal("ok", r.status);
+        }
+
+        [Fact]
+        public void Arc3D_RadiusMismatch_E420()
+        {
+            // 起点到圆心 0.02、终点到圆心 0.0125 → 该接口必 E_FAIL,静态层先拦
+            var r = V(@"[{""op"":""arc3d"",""start"":[-0.02,0,0],""end"":[0.0125,0,0],""center"":[0,0,0]}]");
+            Assert.True(HasCode(r, "E420"));
+        }
+
+        [Fact]
+        public void Arc3D_MissingCenter_E420()
+        {
+            var r = V(@"[{""op"":""arc3d"",""start"":[-0.02,0,0],""end"":[0.02,0,0]}]");
+            Assert.True(HasCode(r, "E420"));
+        }
+
+        [Fact]
+        public void Arc3D_RadiusFieldMismatch_WarnsW420()
+        {
+            // 显式给的 radius 与几何不符:不拦(构建器按几何算),但要提醒
+            var r = V(@"[{""op"":""arc3d"",""start"":[-0.02,0,0],""end"":[0.02,0,0],""center"":[0,0,0],""radius"":0.5}]");
+            Assert.False(HasCode(r, "E420"));
+            Assert.True(HasCode(r, "W420"));
+        }
+
+        /// <summary>两个开口拱形样条截面(首尾都在 v=0,closed 默认 false)。</summary>
+        private const string OpenSplineSections =
+            @"""profiles"":[" +
+            @"{""plane"":""@p2"",""spline"":{""points"":[[-0.01,0],[-0.006,0.014],[0,0.02],[0.006,0.014],[0.01,0]]}}," +
+            @"{""plane"":""@p3"",""spline"":{""points"":[[-0.008,0],[-0.005,0.011],[0,0.016],[0.005,0.011],[0.008,0]]}}]";
+
+        private const string TwoPlanes =
+            @"{""op"":""plane"",""name"":""p2"",""base"":""RefPlane_2"",""distance"":0.0}," +
+            @"{""op"":""plane"",""name"":""p3"",""base"":""RefPlane_2"",""distance"":0.03}";
+
+        [Fact]
+        public void LoftSurface_OpenSpline_WithoutOpenProfile_E410()
+        {
+            // 开口截面默认不放行:必须在【静态校验】阶段就报,而不是建完变僵尸再回滚
+            var r = V(@"[" + TwoPlanes + @",{""op"":""loft_surface"",""name"":""sf1""," + OpenSplineSections + "}]");
+            Assert.True(HasCode(r, "E410"));
+            Assert.Equal("error", r.status);
+        }
+
+        [Fact]
+        public void LoftSurface_OpenSpline_WithOpenProfile_Ok()
+        {
+            var r = V(@"[" + TwoPlanes + @",{""op"":""loft_surface"",""name"":""sf1"",""openProfile"":true," + OpenSplineSections + "}]");
+            Assert.False(HasCode(r, "E410"));
+            Assert.Equal("ok", r.status);
+        }
+
+        [Fact]
+        public void LoftSurface_ClosedSpline_NoOpenProfileNeeded()
+        {
+            // 闭合样条不受影响(老路子别动)
+            var r = V(@"[" + TwoPlanes + @",{""op"":""loft_surface"",""name"":""sf1"",""profiles"":[" +
+                    @"{""plane"":""@p2"",""spline"":{""points"":[[-0.01,0],[0,0.02],[0.01,0]],""closed"":true}}," +
+                    @"{""plane"":""@p3"",""spline"":{""points"":[[-0.008,0],[0,0.016],[0.008,0]],""closed"":true}}]}]");
+            Assert.False(HasCode(r, "E410"));
+        }
+
+        // ---------- polarhole E419(2026-10-25):极坐标定位孔 ----------
+
+        private const string PolarBase = @"{""op"":""polarhole"",""plane"":""RefPlane_1"",""boltdia"":0.182,""angleDeg"":315,""diameter"":0.010}";
+
+        [Fact]
+        public void PolarHole_HappyPath_Ok()
+        {
+            var r = V("[" + Wall + "," + PolarBase + "]");
+            Assert.Equal("ok", r.status);
+            Assert.Equal(0, r.errorCount);
+            Assert.Equal(0, r.warningCount);
+        }
+
+        [Fact]
+        public void PolarHole_MissingBoltDia_E419()
+        {
+            var r = V(@"[{""op"":""polarhole"",""plane"":""RefPlane_1"",""angleDeg"":315,""diameter"":0.010}]");
+            Assert.True(HasCode(r, "E419"));
+        }
+
+        [Fact]
+        public void PolarHole_MissingAngle_E419()
+        {
+            var r = V(@"[{""op"":""polarhole"",""plane"":""RefPlane_1"",""boltdia"":0.182,""diameter"":0.010}]");
+            Assert.True(HasCode(r, "E419"));
+        }
+
+        [Fact]
+        public void PolarHole_AnglesArray_Ok()
+        {
+            var r = V("[" + Wall + @",{""op"":""polarhole"",""plane"":""RefPlane_1"",""boltdia"":0.182,""angles"":[30, 210, 330],""diameter"":0.010}]");
+            Assert.Equal("ok", r.status);
+            Assert.Equal(0, r.errorCount);
+        }
+
+        [Fact]
+        public void PolarHole_AngleZeroDegenerate_E419()
+        {
+            var r = V("[" + Wall + @",{""op"":""polarhole"",""plane"":""RefPlane_1"",""boltdia"":0.182,""angles"":[0, 45],""diameter"":0.010}]");
+            Assert.True(HasCode(r, "E419"));
+        }
+
+        [Fact]
+        public void PolarHole_Angle180Degenerate_E419()
+        {
+            var r = V("[" + Wall + @",{""op"":""polarhole"",""plane"":""RefPlane_1"",""boltdia"":0.182,""angles"":[180],""diameter"":0.010}]");
+            Assert.True(HasCode(r, "E419"));
+        }
+
+        [Fact]
+        public void PolarHole_AnglesBadElement_E419()
+        {
+            // TryGetNum 按库内约定接受数字字符串("30"→30.0);布尔元素才是解析错误
+            var r = V("[" + Wall + @",{""op"":""polarhole"",""plane"":""RefPlane_1"",""boltdia"":0.182,""angles"":[true],""diameter"":0.010}]");
+            Assert.True(HasCode(r, "E419"));
+        }
+
+        [Fact]
+        public void PolarHole_AnglesNumericString_Accepted()
+        {
+            var r = V("[" + Wall + @",{""op"":""polarhole"",""plane"":""RefPlane_1"",""boltdia"":0.182,""angles"":[""30"", ""210""],""diameter"":0.010}]");
+            Assert.Equal("ok", r.status);
+        }
+
+        [Fact]
+        public void PolarHole_BoltDiaTooLarge_E419()
+        {
+            // boltdia 是直径且单位米:>5m 判 mm 当 m
+            var r = V("[" + Wall + @",{""op"":""polarhole"",""plane"":""RefPlane_1"",""boltdia"":182,""angleDeg"":315,""diameter"":0.010}]");
+            Assert.True(HasCode(r, "E419"));
+        }
+
+        [Fact]
+        public void PolarHole_NoDiameterNoThread_E419()
+        {
+            var r = V("[" + Wall + @",{""op"":""polarhole"",""plane"":""RefPlane_1"",""boltdia"":0.182,""angleDeg"":315}]");
+            Assert.True(HasCode(r, "E419"));
+        }
+
+        [Fact]
+        public void PolarHole_FiniteNoDepth_E419()
+        {
+            var r = V("[" + Wall + @",{""op"":""polarhole"",""plane"":""RefPlane_1"",""boltdia"":0.182,""angleDeg"":315,""diameter"":0.010,""mode"":""finite""}]");
+            Assert.True(HasCode(r, "E419"));
+        }
+
+        [Fact]
+        public void PolarHole_CircleIgnored_W419()
+        {
+            var r = V("[" + Wall + @",{""op"":""polarhole"",""plane"":""RefPlane_1"",""boltdia"":0.182,""angleDeg"":315,""diameter"":0.010,""circle"":[0.05, 0.05, 0.005]}]");
+            Assert.True(HasCode(r, "W419"));
+        }
+
+        [Fact]
+        public void PolarHole_FirstFeatureNoStock_E401()
+        {
+            // 除料语义:第一个特征就是 polarhole 且无增材前置 → E401(与 cut/hole 同语义)
+            var r = V("[" + PolarBase + "]");
+            Assert.True(HasCode(r, "E401"));
+        }
+
+        [Fact]
+        public void PolarHole_UnknownOpNoLongerE101()
+        {
+            // op=polarhole 已进白名单:不应再报 E101 未知 op
+            var r = V("[" + Wall + "," + PolarBase + "]");
+            Assert.False(HasCode(r, "E101"));
+        }
+
+        // ---------- boltcircle E431/E432/W431(2026-10-25):种子孔 + 圆周阵列 ----------
+
+        private const string BoltBase = @"{""op"":""boltcircle"",""plane"":""RefPlane_1"",""boltdia"":0.182,""count"":8,""diameter"":0.018}";
+
+        [Fact]
+        public void BoltCircle_HappyPath_Ok()
+        {
+            // 这条 op 的卖点是"孔数天生可改":给 count 就够,不写 angles,默认半个齿距起始角
+            var r = V("[" + Wall + "," + BoltBase + "]");
+            Assert.Equal("ok", r.status);
+            Assert.Equal(0, r.errorCount);
+            Assert.Equal(0, r.warningCount);
+        }
+
+        [Fact]
+        public void BoltCircle_NotUnknownOp()
+        {
+            var r = V("[" + Wall + "," + BoltBase + "]");
+            Assert.False(HasCode(r, "E101"));
+        }
+
+        [Fact]
+        public void BoltCircle_MissingCount_E431()
+        {
+            var r = V(@"[{""op"":""boltcircle"",""plane"":""RefPlane_1"",""boltdia"":0.182,""diameter"":0.018}]");
+            Assert.True(HasCode(r, "E431"));
+        }
+
+        [Fact]
+        public void BoltCircle_CountTooSmall_E431()
+        {
+            var r = V(@"[{""op"":""boltcircle"",""plane"":""RefPlane_1"",""boltdia"":0.182,""count"":1,""diameter"":0.018}]");
+            Assert.True(HasCode(r, "E431"));
+        }
+
+        [Fact]
+        public void BoltCircle_MissingBoltDia_E431()
+        {
+            var r = V(@"[{""op"":""boltcircle"",""plane"":""RefPlane_1"",""count"":8,""diameter"":0.018}]");
+            Assert.True(HasCode(r, "E431"));
+        }
+
+        [Fact]
+        public void BoltCircle_NoDiameterNoThread_E432()
+        {
+            var r = V(@"[{""op"":""boltcircle"",""plane"":""RefPlane_1"",""boltdia"":0.182,""count"":8}]");
+            Assert.True(HasCode(r, "E432"));
+        }
+
+        [Fact]
+        public void BoltCircle_AnglesIgnored_W431()
+        {
+            // 传了 polarhole 的 angles[] 也不该被静默忽略:只是警告(仍按 count 建阵列)
+            var r = V("[" + Wall + @",{""op"":""boltcircle"",""plane"":""RefPlane_1"",""boltdia"":0.182,""count"":8,""diameter"":0.018,""angles"":[30, 150, 270]}]");
+            Assert.True(HasCode(r, "W431"));
+        }
+
+        [Fact]
+        public void BoltCircle_AngleZeroDegenerate_E432()
+        {
+            var r = V("[" + Wall + @",{""op"":""boltcircle"",""plane"":""RefPlane_1"",""boltdia"":0.182,""count"":8,""diameter"":0.018,""angleDeg"":0}]");
+            Assert.True(HasCode(r, "E432"));
+        }
+
+        [Fact]
+        public void BoltCircle_FirstFeatureNoStock_E401()
+        {
+            // 打孔类:第一个特征就是 boltcircle 且无增材前置 → E401(与 cut/hole/polarhole 同语义)
+            var r = V("[" + BoltBase + "]");
+            Assert.True(HasCode(r, "E401"));
+        }
+
+        // ---------- replaceOf 重建语义 W433(2026-11-06):不支持替换删除的 op 静态报 warning ----------
+
+        [Fact]
+        public void ReplaceOf_SupportedOps_NoWarning()
+        {
+            // 核心 7 op 支持 replaceOf:extrude/cut/revolve/hole/polarhole/boltcircle/pattern
+            var r = V("[" + Wall + @",{""op"":""revolve"",""plane"":""RefPlane_3"",""polygon"":[[0.05,0],[0.11,0],[0.11,0.02],[0.05,0.02]],""axis"":[[0,0],[0,0.03]],""replaceOf"":""flange_body""}]");
+            Assert.False(HasCode(r, "W433"));
+        }
+
+        [Fact]
+        public void ReplaceOf_UnsupportedOp_Warns_W433()
+        {
+            // loft 不支持 replaceOf:此前执行期静默忽略,现在静态层就报 W433
+            var r = V("[" + Wall + @",{""op"":""fillet"",""radius"":0.005,""edges"":[{""face"":""face:+Z:outer"",""edge"":0}],""replaceOf"":""round_1""}]");
+            Assert.True(HasCode(r, "W433"));
+        }
+
+        [Fact]
+        public void ReplaceOf_Absent_NoWarning()
+        {
+            var r = V("[" + Wall + @",{""op"":""fillet"",""radius"":0.005,""edges"":[{""face"":""face:+Z:outer"",""edge"":0}]}]");
+            Assert.False(HasCode(r, "W433"));
+        }
+
+        // ---------- bluesurf(E421,2026-11-09) ----------
+
+        [Fact]
+        public void Bluesurf_Minimal_Ok()
+        {
+            var r = V(@"[{""op"":""extrude"",""name"":""box"",""plane"":""RefPlane_1"",""rect"":[[-0.1,-0.1],[0.1,0.1]],""depth"":0.05},
+                         {""op"":""bluesurf"",""name"":""bs1"",""edgeOf"":""@box"",""edges"":[1,2]}]");
+            Assert.Equal("ok", r.status);
+            Assert.Equal(0, r.errorCount);
+        }
+
+        [Fact]
+        public void Bluesurf_MissingEdgeOf_E421()
+        {
+            var r = V("[" + Wall + @",{""op"":""bluesurf"",""name"":""bs1"",""edges"":[1,2]}]");
+            Assert.True(HasCode(r, "E421"));
+        }
+
+        [Fact]
+        public void Bluesurf_ForwardRef_E421()
+        {
+            // bluesurf 在前、box 在后:前向引用必须拦
+            var r = V(@"[{""op"":""bluesurf"",""name"":""bs1"",""edgeOf"":""@box"",""edges"":[1,2]},
+                         {""op"":""extrude"",""name"":""box"",""plane"":""RefPlane_1"",""rect"":[[-0.1,-0.1],[0.1,0.1]],""depth"":0.05}]");
+            Assert.True(HasCode(r, "E421"));
+        }
+
+        [Fact]
+        public void Bluesurf_OneEdge_E421()
+        {
+            var r = V("[" + Wall + @",{""op"":""bluesurf"",""name"":""bs1"",""edgeOf"":""@box"",""edges"":[1]}]");
+            Assert.True(HasCode(r, "E421"));
+        }
+
+        [Fact]
+        public void Bluesurf_ThreeEdges_E421()
+        {
+            var r = V("[" + Wall + @",{""op"":""bluesurf"",""name"":""bs1"",""edgeOf"":""@box"",""edges"":[1,2,5]}]");
+            Assert.True(HasCode(r, "E421"));
+        }
+
+        [Fact]
+        public void Bluesurf_ZeroIndex_E421()
+        {
+            var r = V("[" + Wall + @",{""op"":""bluesurf"",""name"":""bs1"",""edgeOf"":""@box"",""edges"":[0,2]}]");
+            Assert.True(HasCode(r, "E421"));
+        }
+
+        [Fact]
+        public void Bluesurf_SameIndex_E421()
+        {
+            var r = V("[" + Wall + @",{""op"":""bluesurf"",""name"":""bs1"",""edgeOf"":""@box"",""edges"":[3,3]}]");
+            Assert.True(HasCode(r, "E421"));
+        }
+
+        [Fact]
+        public void Bluesurf_ObjectEdges_DoNotTripBluesurfButTripE205()
+        {
+            // edges 是对象数组(fillet 形态)时,bluesurf 的整数通道为空 → E421 缺 edges
+            var r = V("[" + Wall + @",{""op"":""bluesurf"",""name"":""bs1"",""edgeOf"":""@box"",""edges"":[{""face"":""face:+Z:outer"",""edge"":0}]}]");
+            Assert.True(HasCode(r, "E421"));
         }
     }
 }

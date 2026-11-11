@@ -1,29 +1,49 @@
 {
   "name": "feature_health_check",
-  "title": "特征体检：枚举拉伸/除料/旋转等特征集合的 Status，定位僵尸（1216476311）",
+  "title": "特征体检：枚举拉伸/除料/旋转等特征集合的 Status，按官方五档定位异常（仅 1216476311 僵尸可删）",
   "version": 1,
   "status": "draft",
   "risk": "readOnly",
-  "anchoredTo": { "se": "2022", "sourceDoc": "part" },
+  "anchoredTo": {
+    "se": "2022",
+    "sourceDoc": "part"
+  },
   "inputs": [
-    { "name": "target", "type": "object", "required": true, "desc": "起始对象=零件文档句柄（先 se_get_selection）" },
-    { "name": "modelIndex", "type": "int", "default": "1", "desc": "Models.Item(i)" }
+    {
+      "name": "target",
+      "type": "object",
+      "required": true,
+      "desc": "起始对象=零件文档句柄（先 se_get_selection）"
+    },
+    {
+      "name": "modelIndex",
+      "type": "int",
+      "default": "1",
+      "desc": "Models.Item(i)"
+    }
   ],
   "preconditions": [
-    { "kind": "handleExists", "hint": "target 必须是句柄表里存在的 obj-N（先 se_get_selection）" },
-    { "kind": "docKind", "value": "part", "hint": "仅零件文档" }
+    {
+      "kind": "handleExists",
+      "hint": "target 必须是句柄表里存在的 obj-N（先 se_get_selection）"
+    },
+    {
+      "kind": "docKind",
+      "value": "part",
+      "hint": "仅零件文档"
+    }
   ],
   "steps": [
     { "member": "Models", "on": "{{target}}" },
     { "member": "Item", "on": "$1", "args": ["{{modelIndex}}"] },
     { "member": "ExtrudedProtrusions", "on": "$2" },
     { "member": "Count", "on": "$3", "args": [] },
-    { "member": "Item", "on": "$3", "args": ["1"] },
+    { "member": "Item", "on": "$3", "args": ["1"], "skipIfZero": "$4" },
     { "member": "Name", "on": "$5", "args": [] },
     { "member": "Status", "on": "$5", "args": [] },
     { "member": "ExtrudedCutouts", "on": "$2" },
     { "member": "Count", "on": "$8", "args": [] },
-    { "member": "Item", "on": "$8", "args": ["1"] },
+    { "member": "Item", "on": "$8", "args": ["1"], "skipIfZero": "$9" },
     { "member": "Name", "on": "$10", "args": [] },
     { "member": "Status", "on": "$10", "args": [] },
     { "member": "RevolvedProtrusions", "on": "$2" },
@@ -31,7 +51,7 @@
     { "member": "RevolvedCutouts", "on": "$2" },
     { "member": "Count", "on": "$15", "args": [] }
   ],
-  "verification": { "kind": "snapshotDiff", "name": "before_health_check", "expect": "输出拉伸/除料/旋转特征集合的 Count 与第 1 个特征的 Name/Status：Status=1216476310 正常、1216476311=僵尸（几何未生成）。僵尸特征立即删除（se_invoke_member Delete + confirm=true），勿带到下一步" },
+  "verification": { "kind": "snapshotDiff", "name": "before_health_check", "expect": "输出拉伸/除料/旋转特征集合的 Count 与第 1 个特征的 Name/Status。Status 按 Solid Edge 官方 FeatureStatusConstants 五档判读（来源：SE2022 Program\\interop.SolidEdgeConstantLib.dll 反编译，2026-10-14 核实）：1216476310=igFeatureOK 正常；1216476311=igFeatureFailed 几何未生成（僵尸）→【仅此一档】可执行删除（se_invoke_member Delete + confirm=true）；1216476312=igFeatureWarned 特征已生成但有警告 →【保留】，只报告 warning，勿删；1216476313=igFeatureSuppressed 特征被用户主动压缩 →【保留，禁止删除】（删掉等于破坏用户模型意图）；1216476314=igFeatureRolledBack 特征被回滚 →【保留】，报告即可。不在上述五档内的未知状态码 →【保留】并原样上报数值，交人工确认后再处置，勿自作主张删除。判据一律走统一分类函数，勿再用\"不等于 1216476310 就删\"的二元判法。集合为空时，对应的\"取第 1 项\"步骤会返回 status=\"skipped\"（skipIfZero 机制），属正常跳过而非失败。" },
   "derivedFrom": "knowledge/EXPERIENCE.md 2026-09-14 沙盒僵尸孔复盘 + modeling-recipes.md §一（featureStatus 判活判死）",
-  "notes": "只枚举各集合第 1 项作健康抽查（完整盘点用 se_walk_object 或脚本遍历）。删除僵尸走 Delete+confirm（破坏性护栏）。另注意 Body.Faces(1).Count 不含柱面——纯板也是 6 面，不能拿面数当'孔切出来'的判据，必须看特征 Status。"
+  "notes": "集合为空时自动跳过\"取第 1 项\"的步骤（第 5、10 步的 skipIfZero），纯拉伸板/无孔件不会再因空集合崩溃，被跳过的步返回 status=\"skipped\"；引用被跳过步骤的后续步（Name/Status）自动级联跳过。skipIfZero 语义见 recipes/README.md §二 steps。只枚举各集合第 1 项作健康抽查（完整盘点用 se_walk_object 或脚本遍历）。五档状态码来源：SE2022 自带 Program\\interop.SolidEdgeConstantLib.dll 的 FeatureStatusConstants 枚举（2026-10-14 用 ilspycmd 反编译核实），与 ModelingTools.ClassifyFeatureStatus 同一张表。删除仅限僵尸 1216476311，走 Delete+confirm（破坏性护栏）；1216476313(Suppressed) 是用户主动压缩，删掉等于抹掉用户意图，禁止删除。另注意 Body.Faces(1).Count 不含柱面——纯板也是 6 面，不能拿面数当'孔切出来'的判据，必须看特征 Status。**已知短板**：旋转两组（RevolvedProtrusions / RevolvedCutouts）目前只取了 Count、没取第 1 项的 Name/Status，僵尸判读覆盖不到旋转件；要补需再加 6 步（总步数将达 22，超 20 步提示阈值），按需再定。"
 }

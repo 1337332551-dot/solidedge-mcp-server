@@ -133,7 +133,7 @@ namespace SolidEdge.Spy.EventMcp
 
         public void BeforeClose() { _hub.Record("ISEDocumentEvents", "BeforeClose", ""); }
         public void BeforeSave() { _hub.Record("ISEDocumentEvents", "BeforeSave", ""); }
-        public void AfterSave() { _hub.Record("ISEDocumentEvents", "AfterSave", ""); }
+        public void AfterSave() { _hub.Record("ISEDocumentEvents", "AfterSave", ""); _hub.NoteMilestone("Save", ""); }
         public void SelectSetChanged(object SelectSet)
         {
             _hub.Record("ISEDocumentEvents", "SelectSetChanged", "SelectSet=" + SinkUtil.Describe(SelectSet));
@@ -152,6 +152,7 @@ namespace SolidEdge.Spy.EventMcp
         {
             _hub.Record("ISEModelRecomputeEvents", "AfterFeatureIsAdded",
                 "AddFlag=" + AddFlag + " Feature=" + SinkUtil.Describe(Feature));
+            _hub.NoteMilestone("FeatureAdded", "AddFlag=" + AddFlag);
         }
         public void BeforeFeatureIsDeleted(SeFeatureDeleteFlag DeleteFlag, object Feature)
         {
@@ -162,6 +163,7 @@ namespace SolidEdge.Spy.EventMcp
         {
             _hub.Record("ISEModelRecomputeEvents", "AfterFeatureIsModified",
                 "ModifyFlag=" + ModifyFlag + " Feature=" + SinkUtil.Describe(Feature));
+            _hub.NoteMilestone("FeatureModified", "ModifyFlag=" + ModifyFlag);
         }
         public void BeforeModelIsDeleted(object Model)
         {
@@ -188,6 +190,7 @@ namespace SolidEdge.Spy.EventMcp
         {
             _hub.Record("ISEAssemblyRecomputeEvents", "AfterAdd",
                 "Type=" + Type + " Obj=" + SinkUtil.Describe(obj));
+            _hub.NoteMilestone("AsmAdd", "Type=" + Type);
         }
         public void BeforeDelete(object theDocument, object obj, ObjectType Type)
         {
@@ -198,6 +201,7 @@ namespace SolidEdge.Spy.EventMcp
         {
             _hub.Record("ISEAssemblyRecomputeEvents", "AfterModify",
                 "Type=" + Type + " ModifyType=" + ModifyType + " Obj=" + SinkUtil.Describe(obj));
+            _hub.NoteMilestone("AsmModify", "ModifyType=" + ModifyType);
         }
     }
 
@@ -323,6 +327,7 @@ namespace SolidEdge.Spy.EventMcp
         public void AfterActiveDocumentChange(object theDocument)
         {
             _hub.Record("ISEApplicationEvents", "AfterActiveDocumentChange", "");
+            _hub.NoteMilestone("DocChange", "");   // 台账:会话边界("上一个命令"失效)
             // "每文档一订阅":切文档必须重订文档级事件源(调研记录 §2.1)。
             // 回调铁律:此处零 COM —— 只 PostMessage,由泵线程延迟重订。
             _hub.RequestDocumentRescan();
@@ -331,6 +336,7 @@ namespace SolidEdge.Spy.EventMcp
         public void AfterCommandRun(int theCommandID)
         {
             _hub.Record("ISEApplicationEvents", "AfterCommandRun", "CommandID=" + theCommandID);
+            _hub.NoteCommand(theCommandID);   // 台账:命令名反解+落盘 Post 到泵线程(回调零 COM)
         }
 
         public void AfterDocumentOpen(object theDocument)
@@ -351,6 +357,7 @@ namespace SolidEdge.Spy.EventMcp
         public void AfterEnvironmentActivate(object theEnvironment)
         {
             _hub.Record("ISEApplicationEvents", "AfterEnvironmentActivate", "");
+            _hub.NoteMilestone("EnvChange", "");   // 台账:会话边界(命令 ID 空间随之更换)
         }
 
         public void AfterNewDocumentOpen(object theDocument)

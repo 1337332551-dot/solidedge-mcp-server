@@ -633,6 +633,59 @@ namespace SolidEdge.Spy.McpServer.Tests
             Assert.Null(s.FacePlaneRef);
         }
 
+        // ---------- face 选择器扩展(2026-10-23):±A:outer|inner 与 ±A:@x,y,z ----------
+
+        [Theory]
+        [InlineData("face:+Z:outer", "+Z", "outer")]
+        [InlineData("face:-x:inner", "-X", "inner")]
+        [InlineData("face:+Z:OUTER", "+Z", "outer")]     // side 大小写不敏感
+        public void Parse_PlaneFaceSide_KindAxisWithSide(string plane, string axis, string side)
+        {
+            var s = Parse(@"{""op"":""extrude"",""plane"":""" + plane + @""",""rect"":[[-0.02,-0.02],[0.02,0.02]],""depth"":0.005}");
+            Assert.NotNull(s.FacePlaneRef);
+            Assert.Equal("Axis", s.FacePlaneRef.Kind);
+            Assert.Equal(axis, s.FacePlaneRef.Axis);
+            Assert.Equal(side, s.FacePlaneRef.Side);
+            Assert.Null(s.FacePlaneRef.ParseError);
+        }
+
+        [Theory]
+        [InlineData("face:+Z:middle")]
+        [InlineData("face:+Z:")]
+        [InlineData("face:+Z:outer:extra")]
+        [InlineData("face:@0,0,0.057")]        // 缺轴:点落在棱上方向不唯一
+        [InlineData("face:+Z:@0,0")]            // 缺一维
+        [InlineData("face:+Z:@a,b,c")]          // 非数字
+        public void Parse_PlaneFaceSideOrPointBad_ParseError(string plane)
+        {
+            var s = Parse(@"{""op"":""extrude"",""plane"":""" + plane + @""",""rect"":[[-0.02,-0.02],[0.02,0.02]],""depth"":0.005}");
+            Assert.NotNull(s.FacePlaneRef);
+            Assert.NotNull(s.FacePlaneRef.ParseError);
+        }
+
+        [Fact]
+        public void Parse_PlaneFacePoint_KindPointWithMeters()
+        {
+            var s = Parse(@"{""op"":""extrude"",""plane"":""face:+Z:@0.01,-0.02,0.057"",""rect"":[[-0.02,-0.02],[0.02,0.02]],""depth"":0.005}");
+            Assert.NotNull(s.FacePlaneRef);
+            Assert.Equal("Point", s.FacePlaneRef.Kind);
+            Assert.Equal("+Z", s.FacePlaneRef.Axis);
+            Assert.NotNull(s.FacePlaneRef.Point);
+            Assert.Equal(0.01, s.FacePlaneRef.Point[0], 12);
+            Assert.Equal(-0.02, s.FacePlaneRef.Point[1], 12);
+            Assert.Equal(0.057, s.FacePlaneRef.Point[2], 12);
+            Assert.Null(s.FacePlaneRef.ParseError);
+        }
+
+        [Fact]
+        public void Parse_PlaneFacePointWithCoordsLocal_ParseError()
+        {
+            // 点是世界坐标,local 要的是面局部 u/v —— 语义冲突必须显式拦
+            var s = Parse(@"{""op"":""extrude"",""plane"":""face:+Z:@0,0,0.057"",""coords"":""local"",""rect"":[[-0.02,-0.02],[0.02,0.02]],""depth"":0.005}");
+            Assert.True(s.CoordsLocal);
+            Assert.NotNull(s.FacePlaneRef.ParseError);
+        }
+
         [Fact]
         public void Parse_ConfirmParsed()
         {
@@ -666,6 +719,57 @@ namespace SolidEdge.Spy.McpServer.Tests
             Assert.DoesNotContain("faceIndex", s.UnknownFields);
             Assert.DoesNotContain("confirm", s.UnknownFields);
             Assert.DoesNotContain("target", s.UnknownFields);
+        }
+
+        // ---------- polarhole(2026-10-25):angles 解析 ----------
+
+        [Fact]
+        public void Parse_Polarhole_AnglesList()
+        {
+            var s = Parse(@"{""op"":""polarhole"",""plane"":""RefPlane_1"",""boltdia"":0.182,""angles"":[30, 210, 330],""diameter"":0.010}");
+            Assert.Equal("polarhole", s.OpLower);
+            Assert.Equal(0.182, s.BoltDia.Value, 12);
+            Assert.NotNull(s.AnglesDeg);
+            Assert.Equal(3, s.AnglesDeg.Count);
+            Assert.Equal(30, s.AnglesDeg[0], 12);
+            Assert.Equal(330, s.AnglesDeg[2], 12);
+            Assert.Null(s.AnglesParseError);
+            Assert.Empty(s.UnknownFields);
+        }
+
+        [Fact]
+        public void Parse_Polarhole_AngleDegSingle()
+        {
+            var s = Parse(@"{""op"":""polarhole"",""boltdia"":0.1,""angleDeg"":45.5,""diameter"":0.01}");
+            Assert.Null(s.AnglesDeg);
+            Assert.Equal(45.5, s.StartAngleDeg.Value, 12);
+        }
+
+        [Fact]
+        public void Parse_Polarhole_AnglesNumericString_Accepted()
+        {
+            // 库内宽松解析约定:数字字符串也收(TryGetDbl/TryGetNum 同语义)
+            var s = Parse(@"{""op"":""polarhole"",""boltdia"":0.1,""angles"":[""30"", ""210""],""diameter"":0.01}");
+            Assert.Null(s.AnglesParseError);
+            Assert.NotNull(s.AnglesDeg);
+            Assert.Equal(2, s.AnglesDeg.Count);
+            Assert.Equal(30, s.AnglesDeg[0], 12);
+        }
+
+        [Fact]
+        public void Parse_Polarhole_AnglesBadElement_ParseError()
+        {
+            var s = Parse(@"{""op"":""polarhole"",""boltdia"":0.1,""angles"":[true],""diameter"":0.01}");
+            Assert.Null(s.AnglesDeg);
+            Assert.NotNull(s.AnglesParseError);
+        }
+
+        [Fact]
+        public void Parse_Polarhole_AnglesNotArray_ParseError()
+        {
+            var s = Parse(@"{""op"":""polarhole"",""boltdia"":0.1,""angles"":30,""diameter"":0.01}");
+            Assert.Null(s.AnglesDeg);
+            Assert.NotNull(s.AnglesParseError);
         }
     }
 }

@@ -23,12 +23,16 @@ namespace SolidEdge.Spy.McpServer.Tools;
 public static class BatchReadTools
 {
 	[McpServerTool]
-	[Description("批量读取多个对象(obj-N)的同一组成员的只读值,把 N×M 次查询压缩成 1 次调用。targets 传对象编号列表(如 [\"obj-1\",\"obj-2\"]),members 传要读的成员名列表(属性或无参方法,如 [\"Value\",\"ProjectionLineAngle1\",\"Range\"]);members 省略时只返回身份与几何指纹。每行带 identity(类型|Name|Key,生命周期内身份)与 geometric(与 ID 无关的几何指纹,重建对象后依然一致,适合做幂等判据),以及 values(成员名→值/类型/单位提示)。纯只读,不写任何对象;读不到的成员进 errors。单位:Solid Edge API 长度=米、角度=弧度(unitNote=true 时附 mm/度换算)。")]
+	[Description("批量读取多个对象(obj-N)的同一组成员的只读值,把 N×M 次查询压成 1 次调用。" +
+		"targets 传对象编号数组(如 [\"obj-1\",\"obj-2\"]),members 传成员名数组(属性或无参方法,如 [\"Value\",\"ProjectionLineAngle1\",\"Range\"]);" +
+		"members 省略时只返回身份与几何指纹。每行带 identity(类型|Name|Key)、geometric(与 ID 无关的几何指纹,重建后仍一致,适合幂等判据)" +
+		"与 values(成员名→值/类型/单位提示)。纯只读;读不到的成员进 errors。单位:API 长度=米、角度=弧度(unitNote=true 时附 mm/度换算)。\n" +
+			"分工:单对象全接口/方法发现用 se_describe_object;本工具=跨对象扇出+几何指纹(幂等判据)。")]
 	public static string se_batch_read(
 		SolidEdgeContext context,
 		[Description("对象编号列表,如 [\"obj-1\",\"obj-2\"];单个对象也请用数组")] string[] targets,
 		[Description("要读取的成员名列表(属性或无参方法,如 [\"Value\",\"ProjectionLineAngle1\"]);留空=只返回身份/几何指纹")] string[] members = null,
-		[Description("可选,是否附带身份指纹(identity)与几何指纹(geometric),默认 true")] bool includeFingerprint = true,
+		[Description("是否附身份(identity)与几何(geometric)指纹,默认 true")] bool includeFingerprint = true,
 		[Description("可选,数值是否附单位换算提示(米→mm、弧度→度),默认 true")] bool unitNote = true)
 	{
 		try
@@ -117,7 +121,8 @@ public static class BatchReadTools
 	{
 		if (value == null)
 		{
-			return new { value = (string)null, type = "(null)", unitNote = (string)null };
+			// P3-2b:成员真实返回 null(读取失败走 errors,不会到这)——说明语义,防止 AI 当成读失败或漏看
+			return new { value = (string)null, type = "(null)", unitNote = (string)null, note = "成员真实返回 null(对象模型的空引用,非读取失败)" };
 		}
 		if (Marshal.IsComObject(value))
 		{
@@ -130,8 +135,10 @@ public static class BatchReadTools
 				handle = context.AddHandle(value, typeName ?? "(未知)", display ?? "(无名称)");
 				hint = "已登记句柄 " + handle + ",可用 se_describe_object 下钻。";
 			}
-			catch
+			catch (Exception ex)
 			{
+				// P3-2b:句柄登记失败不再静默吞,值照常返回但说明下钻不可用及原因
+				hint = "句柄登记失败(本条无法用 se_describe_object 下钻): " + ex.Message;
 			}
 			return new { value = display, type = typeName, handle = handle, hint = hint };
 		}
@@ -180,17 +187,7 @@ public static class BatchReadTools
 
 	private static string DescribeException(Exception ex)
 	{
-		if (ex == null) return "(未知错误)";
-		StringBuilder stringBuilder = new StringBuilder();
-		for (Exception exception = ex; exception != null; exception = exception.InnerException)
-		{
-			if (stringBuilder.Length > 0) stringBuilder.Append(" <- ");
-			stringBuilder.Append(exception.GetType().Name).Append(": ").Append(exception.Message);
-			if (exception is COMException comException)
-			{
-				stringBuilder.Append(" (HRESULT=0x").Append(comException.ErrorCode.ToString("X8")).Append(')');
-			}
-		}
-		return stringBuilder.ToString();
+		// P2-1:统一走 EvidenceContract(过去 7 份私有副本行为漂移,已收编)
+		return EvidenceContract.DescribeException(ex);
 	}
 }

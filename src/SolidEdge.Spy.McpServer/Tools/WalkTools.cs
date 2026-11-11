@@ -17,7 +17,13 @@ public static class WalkTools
 	private static int _typeLibsLoaded;
 
 	[McpServerTool]
-	[Description("按路径字符串取对象树任意位置的概要。路径格式如 'Application.ActiveDocument.Sketches.Item(1)'。返回该位置对象的类型、名称、子属性列表、子集合元素列表。集合会额外返回 items 字段(前 maxItems 个元素的名字,如 Sheets 的 items=[\"图页1\",\"A4\",\"39339\",...]),用于全集枚举发现异常成员(如视图编辑上下文的数字名 sheet)。AI 可用此工具自由探索对象树,无需用户选择。注意:本工具只枚举无参属性,FEA 仿真对象(Study/Load/Constraint)的 Name 及集合入口(LoadOwner/ConstraintOwner)是 IDispatch 派发成员/方法,走到 Study 层会'断头'。若路径解析失败或成员为空:不要写脚本或独立程序绕过!应终止本轮自动尝试,请用户在 Solid Edge 中手动选中目标对象,改用 se_get_selection + se_describe_object 重新查找(它们走 IDispatch 通道,能读到派发属性如 Name 和全部方法)。")]
+	[Description("按路径字符串取对象树任意位置的概要。路径格式如 'Application.ActiveDocument.Sketches.Item(1)'。" +
+		"返回该位置对象的类型、名称、子属性列表、子集合元素列表——children 只含 null/集合/COM 对象三类分支," +
+		"标量属性值不进列表也不报错(要看属性值请用 se_describe_object)。集合额外返回 items(前 maxItems 个元素名)," +
+		"用于全集枚举发现异常成员(如视图编辑上下文的数字名 sheet)。本工具只枚举无参属性;FEA 仿真对象(Study/Load/Constraint)" +
+		"的 Name 与集合入口是 IDispatch 派发成员/方法,走到 Study 层会'断头'。" +
+		"若路径解析失败或成员为空:不要写脚本绕过!应终止本轮自动尝试,请用户在 SE 中选中目标对象," +
+		"改用 se_get_selection + se_describe_object(走 IDispatch 通道,能读到派发属性与全部方法)。")]
 	public static string se_walk_object(SolidEdgeContext context, [Description("对象路径,如 'Application.ActiveDocument.Sketches.Item(1)'")] string path, [Description("每个集合列出元素名单的最大条数,默认 25,上限 200;0=不列名单")] int maxItems = 25)
 	{
 		try
@@ -50,6 +56,7 @@ public static class WalkTools
 				}
 				string name = (SafeGetProperty(obj, "Name") as string) ?? "(无名称)";
 				List<object> list = new List<object>();
+				List<object> unreadableProperties = new List<object>();   // P3-2b:属性读不到不再静默消失
 				// 目标本身是集合时,列出自身元素(否则集合成员不可见,如 Sheets 里的数字名 sheet)
 				object selfItems = null;
 				int selfCount = 0;
@@ -76,8 +83,12 @@ public static class WalkTools
 								{
 									obj3 = obj.GetType().InvokeMember(name2, BindingFlags.InvokeMethod | BindingFlags.GetProperty, null, obj, null);
 								}
-								catch
+								catch (Exception ex)
 								{
+									// P3-2b:读不到的属性单独列出(带原因),不再从 children 里静默消失。
+									// 2026-10-19 验证发现:ex.Message 只有 TargetInvocationException 套话,
+									// 真实内因(成员不存在/需要参数/权限)全被吞——改用统一展开(内含 HRESULT 人话化)。
+									unreadableProperties.Add(new { name = name2, error = EvidenceContract.DescribeException(ex) });
 									continue;
 								}
 								if (obj3 == null)
@@ -108,7 +119,7 @@ public static class WalkTools
 								}
 								else if (Marshal.IsComObject(obj3))
 								{
-									string type2 = "(未知)";
+									string type2 = "(未知:COM类型信息读不到)";
 									try
 									{
 										ComTypeInfo comTypeInfo2 = ComPtr.FromRCW(obj3).TryGetComTypeInfo();
@@ -119,6 +130,7 @@ public static class WalkTools
 									}
 									catch
 									{
+										// P3-2b:类型读不到时回退值本身说明原因(不掩盖)
 									}
 									list.Add(new
 									{
@@ -147,7 +159,8 @@ public static class WalkTools
 					name = name,
 					selfCount = (selfItems != null ? (int?)selfCount : null),
 					selfItems = selfItems,
-					children = list
+					children = list,
+					unreadableProperties = ((unreadableProperties.Count > 0) ? unreadableProperties : null)
 				});
 			});
 		}

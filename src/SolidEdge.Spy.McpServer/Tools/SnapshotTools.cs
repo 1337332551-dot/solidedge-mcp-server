@@ -30,22 +30,42 @@ public static class SnapshotTools
 	private static int _typeLibsLoaded;
 
 	[McpServerTool]
-	[Description("对象快照与差异对比。action=save:把 obj-N 指向的集合(如 Sheet 的 Dimensions / Lines2d)或单个对象的可读属性存成命名快照(落盘 %LOCALAPPDATA%\\SolidEdgeSpy\\snapshots,SE 崩溃/进程重启后仍在);action=diff:与当前状态对比,输出 added(新增)/removed(消失)/changed(变化,含旧值→新值);action=list:列出全部快照;action=drop:删除快照。典型用途:①改参数/重建对象前后对照 ②SE 崩溃后盘点残留 ③幂等脚本跑完校验(save 前后各一次,diff 为空即幂等)。配对方式:集合按成员 Name 配对,单对象按属性名配对,值比较失败时回退几何指纹(与对象 ID 无关)。只读,不修改图纸。")]
+	[Description("对象/拓扑快照与差异对比。scope=objects(默认):把 obj-N 指向的集合(如 Sheet 的 Dimensions/Lines2d)或单个对象的可读属性存成命名快照," +
+		"配对按集合成员 Name/单对象属性名(值比较失败回退几何指纹),参数用 target;" +
+		"scope=faces:模型拓扑面级快照,按 Face.ID 配对(面被完全覆盖会变成 removed+added),参数用 objectId(文档句柄,省略=活动文档)与 areaTolerancePct(默认 1%)。\n" +
+		"action=save/diff/list/drop;diff 输出 added/removed/changed(含旧值→新值),faces 档 identical=true=面集合与特征状态全一致(幂等判据)。\n" +
+		"快照落盘 %LOCALAPPDATA%\\SolidEdgeSpy\\{snapshots|topology},重启后仍在;comparable=false=快照与当前文档不是同一零件。\n" +
+		"⚠️ scope 决定 target(objects 用)与 objectId(faces 用)的取义。典型用途:改参数/重建前后对照、拓扑级\"这次特征新增了哪些面\"、幂等校验。只读。")]
 	public static string se_snapshot_diff(
 		SolidEdgeContext context,
 		[Description("动作:save=保存快照 / diff=与已存快照对比 / list=列出快照 / drop=删除快照")] string action = "save",
 		[Description("快照名(如 before_fix / after_rerun / crash_residue);save/diff/drop 必填")] string name = null,
-		[Description("save 必填:目标 obj-N(集合如 Sheet.Dimensions、Lines2d,或单个对象);diff 可省略(默认按快照记录重新解析,解析不到再要求传)")] string target = null,
-		[Description("可选,枚举集合成员上限,默认 500")] int maxItems = 500,
-		[Description("可选,只保留 Name 含该子串的成员(如 \"Dimension\"),省略=全部")] string nameFilter = null)
+		[Description("快照域:objects(默认)=对象属性快照(用 target) | faces=拓扑面级快照(用 objectId,配 Face.ID,即原 se_model_state_snapshot)")] string scope = "objects",
+		[Description("scope=objects 的 save 必填:目标 obj-N(集合如 Sheet.Dimensions、Lines2d,或单个对象);diff 可省略(默认按快照记录重新解析,解析不到再要求传)")] string target = null,
+		[Description("scope=faces 可选:文档句柄 obj-N;省略=活动文档")] string objectId = null,
+		[Description("scope=faces 可选:面积变化超过该百分比才算 changed,默认 1.0")] double areaTolerancePct = 1.0,
+		[Description("可选,列表输出上限:objects 档默认 500(枚举集合成员),faces 档默认 50(diff 列表每项条数);0=按 scope 取默认")] int maxItems = 0,
+		[Description("scope=objects 可选,只保留 Name 含该子串的成员(如 \"Dimension\"),省略=全部")] string nameFilter = null)
 	{
 		try
 		{
 			string act = string.IsNullOrWhiteSpace(action) ? "save" : action.Trim().ToLowerInvariant();
+			string sc = string.IsNullOrWhiteSpace(scope) ? "objects" : scope.Trim().ToLowerInvariant();
+			if (sc == "faces")
+			{
+				// 拓扑面级快照(原 se_model_state_snapshot,2026-11-07 并入):整条链路转调原实现,行为零漂移
+				if (maxItems <= 0) maxItems = 50;
+				return ModelStateSnapshotTools.se_model_state_snapshot(context, act, name, areaTolerancePct, maxItems, objectId);
+			}
+			if (sc != "objects")
+			{
+				return Error("未知 scope \"" + scope + "\"。可用:objects(默认) / faces。");
+			}
 			if (act == "list") return ListSnapshots();
 			if (string.IsNullOrWhiteSpace(name)) return Error("name 不能为空(save/diff/drop 都要快照名)。");
 			string snapName = name.Trim();
 			if (!IsSafeName(snapName)) return Error("name 非法:只允许字母/数字/下划线/短横线/点,长度 1~64。收到: \"" + name + "\"");
+			if (maxItems <= 0) maxItems = 500;
 			if (act == "drop") return DropSnapshot(snapName);
 			if (act == "save") return context.Invoke(() => SaveCore(context, snapName, target, maxItems, nameFilter));
 			if (act == "diff") return context.Invoke(() => DiffCore(context, snapName, target, maxItems, nameFilter));
@@ -502,18 +522,8 @@ public static class SnapshotTools
 
 	private static string DescribeException(Exception ex)
 	{
-		if (ex == null) return "(未知错误)";
-		StringBuilder stringBuilder = new StringBuilder();
-		for (Exception exception = ex; exception != null; exception = exception.InnerException)
-		{
-			if (stringBuilder.Length > 0) stringBuilder.Append(" <- ");
-			stringBuilder.Append(exception.GetType().Name).Append(": ").Append(exception.Message);
-			if (exception is COMException comException)
-			{
-				stringBuilder.Append(" (HRESULT=0x").Append(comException.ErrorCode.ToString("X8")).Append(')');
-			}
-		}
-		return stringBuilder.ToString();
+		// P2-1:统一走 EvidenceContract(本文件旧版没接 P1-1 码表,收编后自动补齐)
+		return EvidenceContract.DescribeException(ex);
 	}
 
 	// ---------------- 数据模型 ----------------

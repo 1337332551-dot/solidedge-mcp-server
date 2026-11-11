@@ -22,14 +22,12 @@ namespace SolidEdge.Spy.McpServer.Tools
             { 8, "ParallelAxis" }, { 9, "Center" }
         };
 
-        [McpServerTool, Description(
-            "装配只读查询(不改任何东西):mode=\"occurrences\" 返回零件清单——0-based 序号、名称、" +
-            "源文件、显示状态、16 元素变换矩阵(行主序,平移在 [12..14],米);mode=\"relations\" 返回约束清单——" +
-            "类型(Ground/Axial/Planar/...)、Status(1=求解成功)、Offset、法向对齐状态;" +
-            "mode=\"bom\" 返回 BOM 统计——按源文件聚合的数量(含子装配递归,跳过 IncludeInBom=false,标注 IsPatternItem);" +
-            "mode=\"all\" 三者都返回。典型流程:先 se_assembly_query 拿零件 0-based 序号与各零件 faceCount" +
-            "(=se_assembly_build constrain face1/face2 可填的 0-based 面序号上界),再下 build op。" +
-            "只读模式(SE_MCP_READONLY=1)下也可用。")]
+        [McpServerTool, Description("装配只读查询(不改任何东西)。mode=\"occurrences\" 返回零件清单(0-based 序号、名称、源文件、显示状态、" +
+		"16 元素变换矩阵行主序、平移在 [12..14],米);mode=\"relations\" 返回约束清单(类型、Status(1=求解成功)、Offset、法向对齐状态);" +
+		"mode=\"bom\" 返回 BOM(按源文件聚合数量,含子装配递归,跳过 IncludeInBom=false,标注 IsPatternItem);mode=\"all\" 全返回。" +
+		"典型流程:先查 occurrences 拿 0-based 序号与各零件 faceCount(constrain face1/face2 的序号上界),再下 build op。" +
+		"只读模式下也可用。faceCount 三态:实测值 / 子装配与空零件=0 / 读失败=null(带 faceCountError,勿当 0 用)。\n" +
+			"分工:本工具=全景清单/BOM/约束关系;按名称过滤找零件拿序号用 se_find_objects(collection=occurrences)。")]
         public static string se_assembly_query(
             SolidEdgeContext context,
             [Description("查询模式:occurrences / relations / bom / all,默认 occurrences")] string mode = "occurrences",
@@ -70,7 +68,10 @@ namespace SolidEdge.Spy.McpServer.Tools
                 if (m == "bom" || m == "all")
                 {
                     object occurrences = AssemblySpec.Get(doc, "Occurrences");
-                    result["bom"] = BomStatistics(occurrences);
+                    var bomReadErrors = new List<object>();
+                    result["bom"] = BomStatistics(occurrences, bomReadErrors);
+                    // P3-2a:BOM 枚举读不到的项不再静默丢,单独列出原因(AI 需要知道 BOM 可能少件)
+                    if (bomReadErrors.Count > 0) result["bomReadErrors"] = bomReadErrors;
                 }
                 return JsonSerializer.Serialize(result, FeatureValidator.JsonOpts);
             });
@@ -106,18 +107,9 @@ namespace SolidEdge.Spy.McpServer.Tools
                     int subCount = GetCount(subs);
                     item["subOccurrenceCount"] = subCount >= 0 ? subCount : 0;
                     // faceCount:该零件 Body 全量面数 = se_assembly_build constrain face1/face2 可填的 0-based 面序号上界。
-                    // 子装配无实体 Body → 0(constrain 对子装配本来也不可用)。
-                    try
-                    {
-                        object pdoc = AssemblySpec.Get(occ, "OccurrenceDocument");
-                        object models = pdoc == null ? null : AssemblySpec.Get(pdoc, "Models");
-                        object model = models == null ? null : AssemblySpec.Call(models, "Item", new object[] { 1 });
-                        object body = model == null ? null : AssemblySpec.Get(model, "Body");
-                        object faces = body == null ? null : AssemblySpec.Call(body, "Faces", new object[] { 1 });
-                        int fc = faces == null ? 0 : GetCount(faces);
-                        item["faceCount"] = fc >= 0 ? fc : 0;
-                    }
-                    catch { item["faceCount"] = 0; }
+                    // P3-2a:读不到时不再填假 0(0 会和"子装配合法 0"撞车,还会误导 constrain 面序号上界)。
+                    // 三态:实测值 / 合法 0(子装配、空零件) / 读失败(faceCount=null + faceCountError 带原因)。
+                    ReadFaceCount(occ, item);
                     list.Add(item);
                 }
                 catch (Exception ex)
@@ -129,6 +121,56 @@ namespace SolidEdge.Spy.McpServer.Tools
                 }
             }
             return list;
+        }
+
+        /// <summary>
+        /// 读单个 Occurrence 的 faceCount(P3-2a 三态):
+        /// 实测值 → faceCount=N;
+        /// 子装配(无实体 Body)/空零件(还没建特征) → 合法 0;
+        /// 读失败 → faceCount=null + faceCountError 说明原因(不再填假 0)。
+        /// </summary>
+        private static void ReadFaceCount(object occ, Dictionary<string, object> item)
+        {
+            object pdoc = AssemblySpec.Get(occ, "OccurrenceDocument");
+            if (pdoc == null)
+            {
+                item["faceCount"] = null;
+                item["faceCountError"] = "读不到 OccurrenceDocument";
+                return;
+            }
+            if (AssemblySpec.IsAssemblyDocument(pdoc))
+            {
+                item["faceCount"] = 0;   // 子装配无实体 Body,constrain 本来也不可用,合法 0
+                return;
+            }
+            try
+            {
+                object models = AssemblySpec.Get(pdoc, "Models");
+                // 零件还没建任何特征时 Models.Item(1) 抛 DISP_E_BADINDEX(0x8002000B) → 空零件,合法 0
+                object model = models == null ? null : AssemblySpec.Call(models, "Item", new object[] { 1 });
+                object body = model == null ? null : AssemblySpec.Get(model, "Body");
+                object faces = body == null ? null : AssemblySpec.Call(body, "Faces", new object[] { 1 });
+                int fc = faces == null ? 0 : GetCount(faces);
+                if (fc >= 0)
+                    item["faceCount"] = fc;
+                else
+                {
+                    item["faceCount"] = null;
+                    item["faceCountError"] = "Faces.Count 读不到";
+                }
+            }
+            catch (Exception ex)
+            {
+                if (ex.GetBaseException().HResult == unchecked((int)0x8002000B))   // DISP_E_BADINDEX = 无几何
+                {
+                    item["faceCount"] = 0;
+                }
+                else
+                {
+                    item["faceCount"] = null;
+                    item["faceCountError"] = AssemblySpec.DescribeEx(ex);
+                }
+            }
         }
 
         // ================= relations =================
@@ -204,11 +246,10 @@ namespace SolidEdge.Spy.McpServer.Tools
             public List<string> Instances = new List<string>();
         }
 
-        private static List<object> BomStatistics(object occurrences)
+        private static List<object> BomStatistics(object occurrences, List<object> readErrors)
         {
             var byFile = new Dictionary<string, BomEntry>(StringComparer.OrdinalIgnoreCase);
-            int total = 0;
-            WalkBom(occurrences, byFile, ref total);
+            WalkBom(occurrences, byFile, readErrors);
 
             var list = new List<object>();
             foreach (var kv in byFile)
@@ -228,16 +269,25 @@ namespace SolidEdge.Spy.McpServer.Tools
         /// 递归走 Occurrences / SubOccurrences。跳过 IncludeInBom=false;
         /// IsPatternItem=true 的成员照样计数但打标(阵列成员,数量上要做乘法判断)。
         /// SubOccurrence 的文件名在 SubOccurrenceFileName 上(不在 OccurrenceFileName,离线文档核实)。
+        /// P3-2a:枚举读不到的项不再静默跳过,记入 readErrors(避免 BOM 少一件 AI 不知情)。
         /// </summary>
-        private static void WalkBom(object occurrences, Dictionary<string, BomEntry> byFile, ref int total)
+        private static void WalkBom(object occurrences, Dictionary<string, BomEntry> byFile, List<object> readErrors)
         {
             int count = GetCount(occurrences);
-            if (count < 0) return;
+            if (count < 0)
+            {
+                readErrors.Add(new { scope = "occurrences", message = "Count 读不到,该层枚举中止(此层 BOM 可能少件)" });
+                return;
+            }
             for (int i = 1; i <= count; i++)
             {
                 object occ;
                 try { occ = AssemblySpec.Call(occurrences, "Item", new object[] { i }); }
-                catch { continue; }
+                catch (Exception ex)
+                {
+                    readErrors.Add(new { index = i - 1, message = AssemblySpec.DescribeEx(ex) });
+                    continue;
+                }
 
                 object includeBom = AssemblySpec.Get(occ, "IncludeInBom", null);
                 if (includeBom != null && !Convert.ToBoolean(includeBom, CultureInfo.InvariantCulture))
@@ -260,11 +310,16 @@ namespace SolidEdge.Spy.McpServer.Tools
                 entry.Qty++;
                 if (patternItem) entry.HasPatternItem = true;
                 entry.Instances.Add(name);
-                total++;
 
                 object subs = AssemblySpec.Get(occ, "SubOccurrences");
-                if (subs != null && GetCount(subs) > 0)
-                    WalkBom(subs, byFile, ref total);
+                if (subs != null)
+                {
+                    int subCount = GetCount(subs);
+                    if (subCount > 0)
+                        WalkBom(subs, byFile, readErrors);
+                    else if (subCount < 0)
+                        readErrors.Add(new { scope = name, message = "SubOccurrences.Count 读不到,该子装配未递归(其内部 BOM 可能少件)" });
+                }
             }
         }
 

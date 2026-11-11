@@ -99,6 +99,13 @@ namespace SolidEdge.Spy.McpServer.Tools
         public Dictionary<string, int> DefinedPlanes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
+        /// true = 目标文档里已经有实体(增量建模)。此时"本批第一个特征就是除料"是合法流程,
+        /// E401 不该拦(2026-10-23 真实建模任务实测:在已有底板单独打一个孔被误拒)。
+        /// 校验器本身仍是纯函数,这个事实只能由调用方告知。
+        /// </summary>
+        public bool AssumeStock;
+
+        /// <summary>
         /// 本批【所有 op 带 name】定义的特征别名 → 定义所在序号(P3 新增)。
         /// 用于 faceOf 的 @别名 引用未定义/前向引用判定(E204)。
         /// 与 DefinedPlanes 并列:plane op 同时进两表;非 plane op 只进本表。
@@ -170,7 +177,7 @@ namespace SolidEdge.Spy.McpServer.Tools
             new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
         /// <summary>规则集版本。规则增删/改级时 +1。</summary>
-        public const string Version = "1.4";   // 1.4:P3 面引用机制(E204 FeatureRefRule;DefinedFeatures 字典;draft/split/web_network/thicken/delete_face 五 op)
+        public const string Version = "1.5";   // 1.5:assumeStock(已有实体上增量除料不再被 E401 误拦);1.4:P3 面引用机制(E204 FeatureRefRule;DefinedFeatures 字典;draft/split/web_network/thicken/delete_face 五 op)
 
         /// <summary>零件文档默认参考面个数。中文版 DisplayName 是「参考平面_N」,只能按索引取。</summary>
         public const int DefaultRefPlaneCount = 3;
@@ -194,12 +201,12 @@ namespace SolidEdge.Spy.McpServer.Tools
             get { return _rules ?? (_rules = RuleRegistry.Build()); }
         }
 
-        public static ValidationReport Validate(JsonElement[] features)
+        public static ValidationReport Validate(JsonElement[] features, bool assumeStock = false)
         {
-            return Validate(FeatureSpecParser.ParseAll(features));
+            return Validate(FeatureSpecParser.ParseAll(features), assumeStock);
         }
 
-        public static ValidationReport Validate(List<FeatureSpec> specs)
+        public static ValidationReport Validate(List<FeatureSpec> specs, bool assumeStock = false)
         {
             var report = new ValidationReport
             {
@@ -234,7 +241,8 @@ namespace SolidEdge.Spy.McpServer.Tools
                     Current = specs[i],
                     Index = i,
                     DefinedPlanes = defined,
-                    DefinedFeatures = definedFeatures
+                    DefinedFeatures = definedFeatures,
+                    AssumeStock = assumeStock
                 };
 
                 foreach (var rule in Rules)
@@ -271,7 +279,7 @@ namespace SolidEdge.Spy.McpServer.Tools
         }
 
         /// <summary>从 JSON 文本校验。接受 [ ... ] 或 {"features":[...]}。</summary>
-        public static ValidationReport ValidateJson(string json)
+        public static ValidationReport ValidateJson(string json, bool assumeStock = false)
         {
             using (var doc = JsonDocument.Parse(json))
             {
@@ -287,7 +295,7 @@ namespace SolidEdge.Spy.McpServer.Tools
                 foreach (var e in featsEl.EnumerateArray())
                     list.Add(e);
 
-                return Validate(list.ToArray());
+                return Validate(list.ToArray(), assumeStock);
             }
         }
 

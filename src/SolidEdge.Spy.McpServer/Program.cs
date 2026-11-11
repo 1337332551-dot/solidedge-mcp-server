@@ -224,6 +224,16 @@ namespace SolidEdge.Spy.McpServer
                     }
                 }
             }
+
+            // 别名层配套(2026-11-07):se_validate_features 并入 se_model_build(dryRun=true)后,
+            // 只读模式的"离线静态校验"能力必须保住——特例把 se_model_build 暴露给只读注册;
+            // 非 dryRun 的真建调用由 ToolRisk.Check(tool, dryRun) 在 tools/call 层拒绝(纵深防御不变)。
+            System.Reflection.MethodInfo modelBuild = typeof(SolidEdge.Spy.McpServer.Tools.ModelingTools).GetMethod(
+                "se_model_build", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            if (modelBuild != null && !visible.Contains(modelBuild))
+            {
+                visible.Add(modelBuild);
+            }
             return visible;
         }
     }

@@ -39,7 +39,18 @@ public static class ScriptTools
 	private const int MaxRunTimeoutSeconds = 600;
 
 	[McpServerTool]
-	[Description("编译并运行一段一次性 C# 脚本(受控沙箱,替代在托管区外自建程序)。适用场景:控制流/批量遍历/复杂循环等 MCP 链式调用不适合的任务(把 N 棱柱等 240 次 round-trip 收敛成 1 次调用)。机制:源码写入 %TEMP%\\sespy\\<name>\\name.cs → 用 Windows 自带的框架 csc(.NET Framework v4.0.30319)编译 → 以独立子进程运行 → 回传 stdout/stderr。脚本崩溃/卡死只影响子进程,超时(timeoutSec,默认 60,上限 600)会强杀整个进程树。源码来源三选一(优先级):filePath(推荐,长脚本免 JSON 转义,改文件后重调即重跑) > code(内联源码) > 两者都不给则复用沙箱里上次保存的 <name>.cs 原样重跑。环境约定:①编译器是框架 csc,脚本必须用 C# 5 语法(不能用 $\"\" 插值/?. 等);②已自动引用合并版 Interop.SolidEdge.dll 和默认基础程序集,脚本可直接 using SolidEdgeFramework/SolidEdgeGeometry/SolidEdgePart/SolidEdgeDraft 等;③连接 SE 用 Marshal.GetActiveObject(\"SolidEdge.Application\") 且 Main 必须 [STAThread];④建议在 Main 开头设 Console.OutputEncoding = System.Text.Encoding.UTF8(否则中文输出可能乱码);⑤运行期间 MCP 会临时把 SE 的 DisplayAlerts 置 false 防对话框卡死,结束后恢复。输出:stdout/stderr 回传上限 64KB(超出 truncated=true),完整输出同时落盘到 <name>.log(结果里的 logPath)。清理:编译产物(exe/dll)跑完即删,.cs 与 .log 保留在沙箱里可复查。审计:每次运行(含被拒)都写入 %LOCALAPPDATA%\\SolidEdgeSpy\\mcp-audit.log。SE_MCP_READONLY=1 时本工具整体禁用。")]
+	[Description("编译并运行一段一次性 C# 脚本(受控沙箱),用于控制流/批量遍历/复杂循环等链式调用不适合的任务" +
+		"(把 240 次 round-trip 收敛成 1 次调用)。机制:源码写入 %TEMP%\\sespy\\<name>\\name.cs → 框架自带 csc" +
+		"(.NET Framework v4.0.30319)编译 → 独立子进程运行 → 回传 stdout/stderr;崩溃/卡死只影响子进程," +
+		"超时(timeoutSec,默认 60,上限 600)强杀整个进程树。\n" +
+		"源码来源三选一(优先级):filePath(推荐,免 JSON 转义) > code(内联) > 都不给则复用沙箱里上次的 <name>.cs。\n" +
+		"环境:①必须 C# 5 语法(不能用 $\"\" 插值/?.);②已自动引用 Interop.SolidEdge.dll 与默认程序集," +
+		"可直接 using SolidEdgeFramework/SolidEdgeGeometry/SolidEdgePart/SolidEdgeDraft;" +
+		"③连 SE 用 Marshal.GetActiveObject(\"SolidEdge.Application\"),Main 必须 [STAThread];" +
+		"④建议设 Console.OutputEncoding=UTF8;⑤运行期间临时 DisplayAlerts=false,结束恢复;" +
+		"⑥自动把 Main 改名 UserMain 并套 try/catch,未处理异常把完整堆栈打到 stderr 并以退出码 1 结束(结果见 crashGuard),用户逻辑不改。" +
+		"输出:stdout/stderr 上限 64KB(超出 truncated=true),完整输出落盘到 <name>.log;编译产物跑完即删,.cs/.log 保留可复查。" +
+		"SE_MCP_READONLY=1 时整体禁用。")]
 	public static string se_script_run(
 		SolidEdgeContext context,
 		[Description("脚本名称,仅限字母/数字/下划线/短横线(1~64位)。用作沙箱子目录与编译产物名,同名会覆盖")] string name,
@@ -82,6 +93,8 @@ public static class ScriptTools
 		string csPath = Path.Combine(sandbox, name + ".cs");
 		string exePath = Path.Combine(sandbox, name + ".exe");
 		string logPath = Path.Combine(sandbox, name + ".log");
+		// 运行次数台账:每真跑一次追加一行时间戳。用来在"第 2 次运行"时提醒固化成配方。
+		string runsPath = Path.Combine(sandbox, name + ".runs");
 		string interopSrc = Path.Combine(AppContext.BaseDirectory, "Interop.SolidEdge.dll");
 		string interopDst = Path.Combine(sandbox, "Interop.SolidEdge.dll");
 
@@ -143,8 +156,15 @@ public static class ScriptTools
 			return Error("找不到框架 csc.exe。默认路径 C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe 不存在,且未设置 SE_MCP_CSC 环境变量。请确认系统自带 .NET Framework,或用 SE_MCP_CSC 指定 csc 全路径。");
 		}
 
+		string crashGuardNote = null;
 		try
 		{
+			// ---- 崩溃栈注入(2026-10-25) ----
+			// .NET Framework 进程里未处理异常会直接崩,连 "Unhandled Exception" 文本都不打,
+			// 工具侧只拿到 exitCode=-532462766(0xE0434352)与 stderr"由于 Exception.ToString() 失败"。
+			// 这里在写入沙箱前把用户的 Main 改名并套一层 try/catch,把 ex.ToString() 打到 stderr。
+			code = WrapMainWithCrashGuard(code, out crashGuardNote);
+
 			// 写源码(覆盖同名草稿,这本来就是我方托管区的草稿纸)
 			// 带 BOM 写:csc 对无 BOM 文件按系统 ANSI 读,中文注释/字面量会乱码
 			File.WriteAllText(csPath, code, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
@@ -160,6 +180,9 @@ public static class ScriptTools
 		{
 			return Error("写沙箱失败: " + ex.Message);
 		}
+
+		// 本次运行之前已经跑过几次(编译失败那次不计,所以在这里读一次就够了)
+		int previousRuns = CountRuns(runsPath);
 
 		// ---- 编译(纯文件操作,不占 STA 线程;失败不进入运行阶段) ----
 		var sw = Stopwatch.StartNew();
@@ -184,7 +207,8 @@ public static class ScriptTools
 		{
 			// 编译失败:不运行,产物清理后把 CS 错误结构化回传
 			CleanupArtifacts(exePath, interopDst);
-			AuditLog.Write("se_script_run", name, "Compile", false, codeSummary, InvocationRisk.ModelChanging, true, "compile error");
+			// 2026-10-25 审计修正:编译失败记 ALLOW 会让台账无法区分"跑了什么"与"什么都没跑",改记 DENY
+			AuditLog.Write("se_script_run", name, "Compile", false, codeSummary, InvocationRisk.ModelChanging, false, "compile error(未运行)");
 			return JsonSerializer.Serialize(new
 			{
 				status = "compile_error",
@@ -193,6 +217,7 @@ public static class ScriptTools
 				compilerOutput = Truncate(compilerOutput, out _),
 				compileErrors = ParseCompileErrors(compilerOutput),
 				csPath = csPath,
+				runCount = previousRuns,
 				hint = "编译失败,脚本未运行。直接看 compileErrors(已把 csc 输出解析成 file/line/column/code/message);脚本必须用 C# 5 语法(框架 csc 不认 $\"\" 插值/?. 等新语法)。"
 			});
 		}
@@ -259,6 +284,9 @@ public static class ScriptTools
 			logPath = null;
 		}
 
+		// ---- 记账:脚本确实跑起来了才 +1(编译失败属手误,不当作"该固化"的信号) ----
+		int runCount = AppendRun(runsPath, previousRuns, status, exitCode);
+
 		// ---- 清理:exe/dll 跑完即删,.cs 与 .log 保留 ----
 		CleanupArtifacts(exePath, interopDst);
 
@@ -277,9 +305,150 @@ public static class ScriptTools
 			diagnostics = BuildDiagnostics(fullStderr, csPath),
 			artifactPath = csPath,
 			logPath = logPath,
+			crashGuard = crashGuardNote,
 			source = codeSource,
-			hint = "控制流/批量遍历用脚本;确定性建模仍优先 se_invoke_chain 或 se_model_build;脚本里验证过的可复用结论请沉淀进 skill 配方。长脚本优先用 filePath 传源码文件:免 JSON 转义,改完文件重调即重跑;只想原样重跑时连 filePath/code 都不用传。输出被截断时读 logPath 看全量。"
+			runCount = runCount,
+			hint = BuildHint(name, runCount)
 		});
+	}
+
+	/// <summary>读沙箱台账里已有的运行次数(文件不存在算 0;读失败也按 0,绝不因此中断脚本)。</summary>
+	private static int CountRuns(string runsPath)
+	{
+		try
+		{
+			if (!File.Exists(runsPath))
+			{
+				return 0;
+			}
+			int n = 0;
+			foreach (string line in File.ReadAllLines(runsPath))
+			{
+				if (!string.IsNullOrWhiteSpace(line))
+				{
+					n++;
+				}
+			}
+			return n;
+		}
+		catch
+		{
+			return 0;
+		}
+	}
+
+	/// <summary>
+	/// 追加一行运行台账,返回本次是第几次。写失败时按 previousRuns+1 报,不影响主流程。
+	///
+	/// 格式:`yyyy-MM-dd HH:mm:ss ok 0`(时间 状态 退出码)。
+	/// 只记时间戳不够 —— 沙箱里的 .cs 是【编译前】就写盘的,编译失败的脚本同样留下文件,
+	/// 光看"文件存在"会把从没跑通的脚本当成可固化对象。带上状态才能让 --recipe-save 判断准入。
+	/// </summary>
+	private static int AppendRun(string runsPath, int previousRuns, string status, int? exitCode)
+	{
+		int current = previousRuns + 1;
+		try
+		{
+			string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " +
+				(status ?? "unknown") + " " +
+				(exitCode.HasValue ? exitCode.Value.ToString() : "-") +
+				System.Environment.NewLine;
+			File.AppendAllText(runsPath, line, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+		}
+		catch
+		{
+			// 台账只是提示/准入用的,写不进去就算了
+		}
+		return current;
+	}
+
+	/// <summary>沙箱里某个脚本的台账汇总(供 CLI `--recipe-save` 判断能不能入库)。</summary>
+	internal struct ScriptRunStats
+	{
+		internal int Total;
+		internal int Ok;
+
+		/// <summary>成功运行过的【不同日期】数。同一天连跑 10 次也只算 1 天 —— 用来挡"一次调试里连跑两遍就入库"。</summary>
+		internal int OkDays;
+
+		internal bool LastOk;
+		internal string LastStatus;
+
+		internal bool HasAny { get { return Total > 0; } }
+	}
+
+	/// <summary>
+	/// 读沙箱里某个脚本的运行台账。文件不存在 / 读失败都返回空统计,由调用方决定怎么处理。
+	/// 旧格式(只有时间戳、没有状态)的行按"未知"计,不计入 Ok —— 宁可高估风险,不可误放行。
+	/// </summary>
+	internal static ScriptRunStats ReadRunStats(string scriptName)
+	{
+		ScriptRunStats st = new ScriptRunStats();
+		if (string.IsNullOrWhiteSpace(scriptName))
+		{
+			return st;
+		}
+		try
+		{
+			string runsPath = Path.Combine(Path.GetTempPath(), "sespy", scriptName, scriptName + ".runs");
+			if (!File.Exists(runsPath))
+			{
+				return st;
+			}
+			HashSet<string> okDates = new HashSet<string>(StringComparer.Ordinal);
+			foreach (string line in File.ReadAllLines(runsPath))
+			{
+				if (string.IsNullOrWhiteSpace(line))
+				{
+					continue;
+				}
+				st.Total++;
+				string[] parts = line.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+				string day = (parts.Length >= 1 && parts[0].Length == 10) ? parts[0] : null;
+				string stt = (parts.Length >= 3) ? parts[2] : null;
+				string code = (parts.Length >= 4) ? parts[3] : null;
+				st.LastStatus = stt ?? "unknown";
+				if (string.Equals(stt, "ok", StringComparison.OrdinalIgnoreCase) && code == "0")
+				{
+					st.Ok++;
+					st.LastOk = true;
+					if (day != null)
+					{
+						okDates.Add(day);
+					}
+				}
+				else
+				{
+					st.LastOk = false;
+				}
+			}
+			st.OkDays = okDates.Count;
+		}
+		catch
+		{
+		}
+		return st;
+	}
+
+	/// <summary>
+	/// 返回体的 hint。第 2 次及以后在开头加一句"该固化了"——判断依据是
+	/// 同一脚本名被反复真跑,说明这类任务不是一次性的,应该沉淀成配方(se_recipe_run)。
+	/// </summary>
+	private static string BuildHint(string name, int runCount)
+	{
+		StringBuilder sb = new StringBuilder();
+		if (runCount >= 2)
+		{
+			sb.Append("【该脚本已运行 ").Append(runCount).Append(" 次,建议固化成配方,别下次再重写一遍】")
+				.Append("用 CLI 一条命令即可(纯本地操作,不碰 Solid Edge): ")
+				.Append("solidedge-mcp --recipe-save ").Append(name).Append(" --title \"用途说明\"")
+				.Append(" --input \"target:object::起始文档句柄\" --dry")
+				.Append("(--dry 只打印生成的 JSON,确认没问题再去掉落盘;之后可用 se_recipe_run ").Append(name).Append(" 调用)。");
+		}
+		sb.Append("控制流/批量遍历用脚本;确定性建模仍优先 se_invoke_chain 或 se_model_build;")
+			.Append("脚本里验证过的可复用结论请沉淀进配方。长脚本优先用 filePath 传源码文件:免 JSON 转义,改完文件重调即重跑;")
+			.Append("只想原样重跑时连 filePath/code 都不用传。输出被截断时读 logPath 看全量。");
+		return sb.ToString();
 	}
 
 	/// <summary>
@@ -716,6 +885,98 @@ public static class ScriptTools
 			first = first.Substring(0, 80) + "...";
 		}
 		return first + " (共 " + ((code ?? "").Length) + " 字符)";
+	}
+
+	/// <summary>
+	/// 给脚本注入崩溃兜底壳(2026-10-25)。
+	///
+	/// 背景:框架(.NET Framework)进程里未处理异常会直接崩,连 "Unhandled Exception" 文本都不打,
+	/// 工具侧只拿到 exitCode=-532462766(0xE0434352)+ stderr"由于 Exception.ToString() 失败",
+	/// 堆栈全丢——本轮的 SaveAs 崩溃就是这样,查不出任何原因。
+	///
+	/// 做法:把用户的 <c>static Main</c> 改名 <c>UserMain</c>(并提升为 internal static,
+	/// 否则壳类访问不到),再追加 <c>__SeMpcCrashGuard.Main</c> 包 try/catch,
+	/// 异常时把完整 <c>ex.ToString()</c> 打到 stderr 并以退出码 1 结束。用户逻辑一行不改。
+	///
+	/// 幂等:源码里已含壳(沙箱 reuse 场景)或找不到 Main 时原样返回。
+	/// </summary>
+	private static string WrapMainWithCrashGuard(string code, out string note)
+	{
+		note = null;
+		if (string.IsNullOrEmpty(code))
+		{
+			note = "源码为空,未注入";
+			return code;
+		}
+		if (code.IndexOf("__SeMpcCrashGuard", StringComparison.Ordinal) >= 0)
+		{
+			note = "已含崩溃兜底壳,跳过(幂等)";
+			return code;
+		}
+
+		var rx = new Regex(@"(?:(?:public|private|internal|protected)\s+)?static\s+(void|int)\s+Main\s*\(([^)]*)\)");
+		Match m = rx.Match(code);
+		if (!m.Success)
+		{
+			note = "没找到 static void/int Main(...),未注入(入口不是标准 Main)";
+			return code;
+		}
+
+		// 壳类在另一个类里,必须以【类名.UserMain】调用,裸调用会 CS0103(2026-10-25 首跑踩到)。
+		var classRx = new Regex(@"\bclass\s+([A-Za-z_]\w*)");
+		Match cm = classRx.Match(code);
+		if (!cm.Success)
+		{
+			note = "找不到 class 声明,未注入(无法确定 Main 的宿主类名)";
+			return code;
+		}
+		string className = cm.Groups[1].Value;
+
+		string retType = m.Groups[1].Value;
+		string paramsText = (m.Groups[2].Value ?? "").Trim();
+		string renamed = "internal static " + retType + " UserMain(" + paramsText + ")";
+		string instrumented = code.Substring(0, m.Index) + renamed + code.Substring(m.Index + m.Length);
+
+		bool hasArgs = paramsText.Length > 0;
+		string argName = "args";
+		if (hasArgs)
+		{
+			string first = paramsText.Split(',')[0].Trim();
+			int sp = first.LastIndexOf(' ');
+			if (sp >= 0 && sp + 1 < first.Length) argName = first.Substring(sp + 1).Trim();
+		}
+		string callTarget = className + ".UserMain(" + (hasArgs ? argName : "") + ");";
+		// Environment 必须全限定:脚本常 using SolidEdgeFramework,那里也有个 Environment 类型(CS0104)
+		string call = retType == "int"
+			? "System.Environment.ExitCode = " + callTarget
+			: callTarget;
+
+		string guard =
+			"\n\n// ===== 由 se_script_run 自动注入的崩溃兜底壳(不改你的逻辑) =====\n" +
+			"internal static class __SeMpcCrashGuard\n" +
+			"{\n" +
+			"    [STAThread]\n" +
+			"    static void Main(string[] args)\n" +
+			"    {\n" +
+			"        // ★ 由壳统一设 UTF-8:shell 侧(se_script_run)按 UTF-8 解码子进程输出,\n" +
+			"        //   脚本自己没设 OutputEncoding 时会按系统 ANSI(GBK)输出 -> 中文全乱码\n" +
+			"        //   (2026-10-25 实测:崩溃栈的 ASCII 类型名/行号可辨,中文异常消息变成问号堆)。\n" +
+			"        try { Console.OutputEncoding = new System.Text.UTF8Encoding(false); } catch { }\n" +
+			"        try\n" +
+			"        {\n" +
+			"            " + call + "\n" +
+			"        }\n" +
+			"        catch (Exception __seEx)\n" +
+			"        {\n" +
+			"            try { Console.Error.WriteLine(\"=== 脚本未处理异常(se_script_run 崩溃兜底) ===\"); } catch { }\n" +
+			"            try { Console.Error.WriteLine(__seEx.ToString()); } catch { }\n" +
+			"            try { System.Environment.Exit(1); } catch { }\n" +
+			"        }\n" +
+			"    }\n" +
+			"}\n";
+
+		note = "已注入崩溃兜底:Main → UserMain(" + (hasArgs ? paramsText : "无参") + "),未处理异常会把完整堆栈打到 stderr";
+		return instrumented + guard;
 	}
 
 	private static string Error(string message)

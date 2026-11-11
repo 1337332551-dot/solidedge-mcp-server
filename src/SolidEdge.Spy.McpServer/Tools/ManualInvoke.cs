@@ -102,6 +102,9 @@ internal static class ManualInvoke
 	[DllImport("oleaut32.dll")]
 	private static extern int VariantClear(nint pvarg);
 
+	[DllImport("oleaut32.dll")]
+	private static extern int SafeArrayDestroy(nint psa);
+
 	public static bool TryInvoke(object target, string member, object[] values, out object result, out Exception error)
 	{
 		result = null;
@@ -136,7 +139,7 @@ internal static class ManualInvoke
 				if (iDsOfNames != 0)
 				{
 					int num4 = ((iDsOfNames == -2147352571) ? (num - 1 - puArgErr) : puArgErr);
-					string text = "IDispatch::Invoke 失败 hr=0x" + iDsOfNames.ToString("X8") + ", puArgErr=" + puArgErr + "(正序第 " + (num4 + 1) + " 个参数)";
+					string text = "IDispatch::Invoke 失败 [成员=" + member + "] hr=0x" + iDsOfNames.ToString("X8") + ", puArgErr=" + puArgErr + "(正序第 " + (num4 + 1) + " 个参数)";
 					if (!string.IsNullOrEmpty(pExcepInfo.bstrDescription))
 					{
 						text = text + ", 服务器描述: " + pExcepInfo.bstrDescription;
@@ -201,7 +204,7 @@ internal static class ManualInvoke
 				iDsOfNames = dispatchFull.Invoke(array[0], ref riid, 1024, 4, ref pDispParams, IntPtr.Zero, out var pExcepInfo, out var _);
 				if (iDsOfNames != 0)
 				{
-					string text = "IDispatch::Invoke(PROPERTYPUT) 失败 hr=0x" + iDsOfNames.ToString("X8");
+					string text = "IDispatch::Invoke(PROPERTYPUT) 失败 [成员=" + member + "] hr=0x" + iDsOfNames.ToString("X8");
 					if (!string.IsNullOrEmpty(pExcepInfo.bstrDescription))
 					{
 						text = text + ", 服务器描述: " + pExcepInfo.bstrDescription;
@@ -222,6 +225,144 @@ internal static class ManualInvoke
 				}
 				Marshal.FreeCoTaskMem(num);
 				Marshal.FreeCoTaskMem(num2);
+			}
+		}
+		catch (Exception ex)
+		{
+			error = ex;
+			return false;
+		}
+	}
+
+	/// <summary>
+	/// 调带 ref double[] 形参的成员(2026-11-02:Sketch3D.BSplineCurves3D.AddByPoints(int, ref double[], bool))。
+	///
+	/// IDispatch 里 ref 数组必须封成 VT_BYREF|VT_ARRAY|VT_R8 —— 变体的数据位放【SAFEARRAY* 的地址】;
+	/// 按普通 VT_ARRAY 传(原 WriteVariant 的做法)服务端认不出形参,只会给 DISP_E_TYPEMISMATCH。
+	/// 为什么不用强类型 interop:本仓引的合并版 Interop.SolidEdge 108 里 BSplineCurves3D 没有 AddByPoints
+	/// (2026-11-02 反射核实),只能走 IDispatch 晚绑定,而 SE 2022 运行时有这个成员。
+	/// </summary>
+	public static bool TryInvokeByRefDoubleArray(object target, string member, object[] values, int byRefIndex,
+		double[] array, out object result, out Exception error)
+	{
+		result = null;
+		error = null;
+		try
+		{
+			IDispatchFull dispatchFull = (IDispatchFull)target;
+			Guid riid = Guid.Empty;
+			int[] dispIds = new int[1];
+			int hr = dispatchFull.GetIDsOfNames(ref riid, new string[1] { member }, 1, 1024, dispIds);
+			if (hr != 0)
+			{
+				throw new COMException("成员 \"" + member + "\" GetIDsOfNames 失败 hr=0x" + hr.ToString("X8"), hr);
+			}
+
+			int num = ((values != null) ? values.Length : 0);
+			if (byRefIndex < 0 || byRefIndex >= num)
+			{
+				throw new ArgumentOutOfRangeException("byRefIndex");
+			}
+
+			nint argsMem = Marshal.AllocCoTaskMem((num <= 0) ? 1 : (24 * num));
+			nint resultMem = Marshal.AllocCoTaskMem(24);
+			nint psa = IntPtr.Zero;          // 本次建的 SAFEARRAY
+			nint holder = IntPtr.Zero;       // 存 SAFEARRAY* 的槽(VT_BYREF 要的是这个槽的地址)
+			nint writtenBack = IntPtr.Zero;  // SE 回写的指针(通常与 psa 相同)
+			try
+			{
+				ZeroVariant(resultMem);
+
+				for (int i = 0; i < num; i++)
+				{
+					nint slot = new IntPtr(argsMem.ToInt64() + 24L * (long)(num - 1 - i));
+					if (i != byRefIndex)
+					{
+						WriteVariant(slot, values[i]);
+						continue;
+					}
+
+					psa = SafeArrayCreateVector(5, 0, array.Length);
+					if (psa == IntPtr.Zero)
+					{
+						throw new OutOfMemoryException("SafeArrayCreateVector(VT_R8) 失败");
+					}
+					nint elem = Marshal.AllocHGlobal(8);
+					try
+					{
+						for (int k = 0; k < array.Length; k++)
+						{
+							Marshal.WriteInt64(elem, BitConverter.DoubleToInt64Bits(array[k]));
+							int putHr = SafeArrayPutElement(psa, new int[1] { k }, elem);
+							if (putHr != 0)
+							{
+								throw new COMException("SafeArrayPutElement(R8) hr=0x" + putHr.ToString("X8"), putHr);
+							}
+						}
+					}
+					finally
+					{
+						Marshal.FreeHGlobal(elem);
+					}
+
+					holder = Marshal.AllocCoTaskMem(8);
+					Marshal.WriteIntPtr(holder, 0, psa);
+					Marshal.WriteInt16(slot, 0, (short)0x6005);   // VT_BYREF|VT_ARRAY|VT_R8
+					Marshal.WriteIntPtr(slot, 8, holder);
+				}
+
+				DISPPARAMS pDispParams = new DISPPARAMS
+				{
+					rgvarg = argsMem,
+					rgdispidNamedArgs = IntPtr.Zero,
+					cArgs = num,
+					cNamedArgs = 0
+				};
+				hr = dispatchFull.Invoke(dispIds[0], ref riid, 1024, 3, ref pDispParams, resultMem, out var pExcepInfo, out var puArgErr);
+				if (hr != 0)
+				{
+					string text = "IDispatch::Invoke 失败 [成员=" + member + "] hr=0x" + hr.ToString("X8") + ", puArgErr=" + puArgErr;
+					if (!string.IsNullOrEmpty(pExcepInfo.bstrDescription))
+					{
+						text = text + ", 服务器描述: " + pExcepInfo.bstrDescription;
+					}
+					if (pExcepInfo.scode != 0)
+					{
+						text = text + ", scode=0x" + pExcepInfo.scode.ToString("X8");
+					}
+					throw new COMException(text, hr);
+				}
+				result = Marshal.GetObjectForNativeVariant(resultMem);
+				return true;
+			}
+			finally
+			{
+				VariantClear(resultMem);
+				int byrefSlot = num - 1 - byRefIndex;   // DISPPARAMS 参数是倒序存的
+				for (int j = 0; j < num; j++)
+				{
+					if (j == byrefSlot) continue;       // 这一格是 VT_BYREF|VT_ARRAY,交给下面按指针释放
+					nint slot = new IntPtr(argsMem.ToInt64() + 24L * (long)j);
+					if (Marshal.ReadInt16(slot, 0) != 0)
+					{
+						VariantClear(slot);
+					}
+				}
+				if (holder != IntPtr.Zero)
+				{
+					writtenBack = Marshal.ReadIntPtr(holder, 0);
+					if (writtenBack != IntPtr.Zero && writtenBack != psa)
+					{
+						SafeArrayDestroy(writtenBack);
+					}
+					Marshal.FreeCoTaskMem(holder);
+				}
+				if (psa != IntPtr.Zero && psa != writtenBack)
+				{
+					SafeArrayDestroy(psa);
+				}
+				Marshal.FreeCoTaskMem(argsMem);
+				Marshal.FreeCoTaskMem(resultMem);
 			}
 		}
 		catch (Exception ex)
@@ -362,9 +503,11 @@ internal static class ManualInvoke
 			nint num4 = Marshal.AllocHGlobal(8);
 			try
 			{
-				for (int k = 0; k < arr.Length; k++)
-				{
-					Marshal.WriteInt64(num4, BitConverter.DoubleToInt64Bits(Convert.ToDouble(arr[k])));
+					for (int k = 0; k < arr.Length; k++)
+					{
+						// arr[k] 若是字符串参数,Convert.ToDouble(object) 会按当前 culture 解析小数点
+						// (ar/de locale 下 "0.5" 会炸/取整)——显式 InvariantCulture;装箱 double 走此重载行为不变。
+						Marshal.WriteInt64(num4, BitConverter.DoubleToInt64Bits(Convert.ToDouble(arr[k], System.Globalization.CultureInfo.InvariantCulture)));
 					int num5 = SafeArrayPutElement(num3, new int[1] { k }, num4);
 					if (num5 != 0)
 					{
