@@ -458,7 +458,7 @@ namespace SolidEdge.Spy.McpServer
             {
                 int id = Interlocked.Increment(ref _handleCounter);
                 string key = "obj-" + id;
-                var handle = new ObjectHandle(comObject, typeName, displayName);
+                var handle = new ObjectHandle(comObject, typeName, displayName, GetCurrentDocPath());
                 _handles[key] = handle;
                 return key;
             });
@@ -473,6 +473,74 @@ namespace SolidEdge.Spy.McpServer
             }
             return null;
         }
+
+        /// <summary>
+        /// P1(2026-11-14):用前统一句柄解析——四入口(invoke_member/invoke_chain/read_geometry/read_model_state)专用。
+        /// ① 文档类句柄先 TTL 探活(2 秒内不重复;读 FullName,便宜且无副作用);
+        /// ② 探活失败按错误码分流:断连家族判死,忙/参数类放过(防误杀);
+        /// ③ 判死返回 staleError,报错带注册文档路径,直接指路重新取句柄。
+        /// 几何/特征句柄没有通用探针,不放这里——它们的失效(E_FAIL)由码表 action 的两态文案兜。
+        /// </summary>
+        public (ObjectHandle Handle, string StaleError) ResolveHandleForUse(string id)
+        {
+            ObjectHandle handle = GetHandle(id);
+            if (handle == null)
+            {
+                return (null, null);   // 不存在——由调用方按原文案报"找不到编号"
+            }
+            if (handle.ComObject != null && Marshal.IsComObject(handle.ComObject)
+                && !string.IsNullOrEmpty(handle.TypeName) && handle.TypeName.EndsWith("Document", StringComparison.Ordinal))
+            {
+                var now = DateTime.UtcNow;
+                if ((now - handle.LastProbeUtc).TotalSeconds >= 2.0)
+                {
+                    handle.LastProbeUtc = now;
+                    try
+                    {
+                        handle.ComObject.GetType().InvokeMember("FullName", BindingFlags.GetProperty, null, handle.ComObject, null);
+                        handle.DeadConfirmed = false;
+                    }
+                    catch (COMException ce) when (HandleLiveness.HrMeansDead(ce.ErrorCode))
+                    {
+                        handle.DeadConfirmed = true;
+                    }
+                    catch
+                    {
+                        // 其它异常(忙/参数不识别/E_FAIL)一律不判死——防误杀,放行让真实调用去报真实错误
+                    }
+                }
+            }
+            if (handle.DeadConfirmed)
+            {
+                return (null, HandleLiveness.StaleMessage(id, handle));
+            }
+            return (handle, null);
+        }
+
+        /// <summary>当前活动文档 FullName,500ms 缓存(注册热循环里不该每次都付一次跨进程 COM 读)。</summary>
+        internal string GetCurrentDocPath()
+        {
+            DateTime now = DateTime.UtcNow;
+            if (_docPathCachedAtUtc != default && (now - _docPathCachedAtUtc).TotalMilliseconds < 500)
+            {
+                return _docPathCache;
+            }
+            _docPathCachedAtUtc = now;
+            try
+            {
+                object doc = null;
+                try { doc = GetApplicationCore().ActiveDocument; } catch { doc = null; }
+                _docPathCache = (doc == null) ? null : Convert.ToString(doc.GetType().InvokeMember("FullName", BindingFlags.GetProperty, null, doc, null));
+            }
+            catch
+            {
+                _docPathCache = null;
+            }
+            return _docPathCache;
+        }
+
+        private string _docPathCache;
+        private DateTime _docPathCachedAtUtc;
 
         public void Dispose()
         {
@@ -517,6 +585,15 @@ namespace SolidEdge.Spy.McpServer
         public string DisplayName { get; }
         public IntPtr IUnknownPtr { get; }
 
+        /// <summary>P1(2026-11-14):注册时的活动文档 FullName(取不到为 null)——失效报错与身份比对的原料。</summary>
+        public string DocPath { get; }
+
+        /// <summary>上次 TTL 探活时间(UTC);ResolveHandleForUse 用。</summary>
+        internal DateTime LastProbeUtc { get; set; }
+
+        /// <summary>探活确认已断连(只按断连家族 hr 判,忙/E_FAIL 不判)。</summary>
+        internal bool DeadConfirmed { get; set; }
+
         public ObjectHandle(object comObject, string typeName, string displayName)
         {
             ComObject = comObject;
@@ -525,6 +602,12 @@ namespace SolidEdge.Spy.McpServer
             IUnknownPtr = comObject != null
                 ? Marshal.GetIUnknownForObject(comObject)
                 : IntPtr.Zero;
+        }
+
+        public ObjectHandle(object comObject, string typeName, string displayName, string docPath)
+            : this(comObject, typeName, displayName)
+        {
+            DocPath = docPath;
         }
 
         /// <summary>比对另一个对象是否与本条目指向同一个 COM 对象(IUnknown 指针相等)。</summary>
@@ -548,6 +631,53 @@ namespace SolidEdge.Spy.McpServer
             {
                 try { Marshal.Release(IUnknownPtr); } catch { }
             }
+        }
+    }
+
+    /// <summary>
+    /// P1(2026-11-14):句柄探活的错误码分流与失效文案——纯静态,单测钉死,不许漂移。
+    /// 分流原则:只有"对象确实不在了"的码才判死;忙(RPC_E_CALL_REJECTED/RETRYLATER)、
+    /// 参数类(DISP_E_*)、语义含混(E_FAIL)一律放过,防误杀正常句柄。
+    /// </summary>
+    internal static class HandleLiveness
+    {
+        private static readonly int[] DeadHrs =
+        {
+            unchecked((int)0x800401FD),   // CO_E_OBJNOTCONNECTED:对象未连接(文档关闭/RCW 断开)
+            unchecked((int)0x80010108),   // RPC_E_DISCONNECTED:对象已与客户端断开
+            unchecked((int)0x800706BA),   // RPC_S_SERVER_UNAVAILABLE:服务器进程不存在
+            unchecked((int)0x800706BE),   // RPC_S_CALL_FAILED:RPC 调用失败
+        };
+
+        /// <summary>该 HRESULT 是否"确认对象已不在"。忙/参数/E_FAIL 一律 false。</summary>
+        internal static bool HrMeansDead(int hr)
+        {
+            foreach (int dead in DeadHrs)
+            {
+                if (hr == dead)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>失效报错:带句柄号/类型/注册文档,直接给恢复动作,不留"API 不支持"的错觉。</summary>
+        internal static string StaleMessage(string id, ObjectHandle handle)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append("句柄已失效(").Append(id);
+            if (handle != null && !string.IsNullOrEmpty(handle.TypeName))
+            {
+                sb.Append(",类型 ").Append(handle.TypeName);
+            }
+            if (handle != null && !string.IsNullOrEmpty(handle.DocPath))
+            {
+                sb.Append(",注册自文档 ").Append(handle.DocPath);
+            }
+            sb.Append("):文档已关闭或对象已断连(0x800401FD/RPC_E_DISCONNECTED 家族)。");
+            sb.Append("请重新 se_get_selection 获取句柄(或用 se_find_objects 重新取面/特征),不要继续用旧 obj-N 重试。");
+            return sb.ToString();
         }
     }
 }

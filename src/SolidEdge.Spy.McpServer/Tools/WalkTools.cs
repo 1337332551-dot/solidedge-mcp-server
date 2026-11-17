@@ -11,20 +11,13 @@ using SolidEdgeFramework;
 
 namespace SolidEdge.Spy.McpServer.Tools;
 
-[McpServerToolType]
+// 2026-11-16 工具面精简:se_walk_object 已从 MCP 工具面撤下(对象树探查统一改走 se_script_run),
+// 类与方法本体保留供 CLI --walk 使用,故不再带 [McpServerToolType]。
 public static class WalkTools
 {
 	private static int _typeLibsLoaded;
 
-	[McpServerTool]
-	[Description("按路径字符串取对象树任意位置的概要。路径格式如 'Application.ActiveDocument.Sketches.Item(1)'。" +
-		"返回该位置对象的类型、名称、子属性列表、子集合元素列表——children 只含 null/集合/COM 对象三类分支," +
-		"标量属性值不进列表也不报错(要看属性值请用 se_describe_object)。集合额外返回 items(前 maxItems 个元素名)," +
-		"用于全集枚举发现异常成员(如视图编辑上下文的数字名 sheet)。本工具只枚举无参属性;FEA 仿真对象(Study/Load/Constraint)" +
-		"的 Name 与集合入口是 IDispatch 派发成员/方法,走到 Study 层会'断头'。" +
-		"若路径解析失败或成员为空:不要写脚本绕过!应终止本轮自动尝试,请用户在 SE 中选中目标对象," +
-		"改用 se_get_selection + se_describe_object(走 IDispatch 通道,能读到派发属性与全部方法)。")]
-	public static string se_walk_object(SolidEdgeContext context, [Description("对象路径,如 'Application.ActiveDocument.Sketches.Item(1)'")] string path, [Description("每个集合列出元素名单的最大条数,默认 25,上限 200;0=不列名单")] int maxItems = 25)
+	internal static string se_walk_object(SolidEdgeContext context, string path, int maxItems = 25)
 	{
 		try
 		{
@@ -35,7 +28,7 @@ public static class WalkTools
 				object obj = ResolvePath(application, path);
 				if (obj == null)
 				{
-					return Error("无法解析路径: " + path + "。请检查路径中的属性名和索引是否正确。重要提示:不要写脚本或独立程序绕过!请终止本轮自动尝试,让用户在 Solid Edge 中手动选中目标对象,然后改用 se_get_selection + se_describe_object 重新查找——它们走 IDispatch 通道,能读到派发属性(如 FEA 载荷的 Name)和全部方法,比本工具(只枚举无参属性)覆盖面更广。");
+					return Error("无法解析路径: " + path + "。请检查路径中的属性名和索引是否正确。提示:本命令只枚举无参属性,派发属性(如 FEA 载荷的 Name)与带参成员读不到;要全覆盖请改用 se_get_selection + se_batch_read(读值)或 scripts/probe_object.cs(列成员)。");
 				}
 				string typeShort = "(未知)";
 				string type = "(未知)";

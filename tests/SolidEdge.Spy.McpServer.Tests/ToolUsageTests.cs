@@ -230,6 +230,60 @@ public sealed class ToolUsageTests : IDisposable
 		Assert.Contains("se_get_selection", neverSection);
 	}
 
+	// ---------- P2-0:失败原因 Top N 与 errText 头尾截断(2026-11-13) ----------
+
+	[Fact]
+	public void Report_失败原因TopN_按结构化status归类排序()
+	{
+		// 3 条 status:error(不同消息头)、2 条 compile_error、1 条无响应
+		AppendLine("{\"ts\":\"{NOW}\",\"src\":\"mcp\",\"tool\":\"se_a\",\"ms\":1,\"ok\":false,\"argsN\":1,\"err\":\"toolStatusError:第 1 个特征未建成\",\"errText\":\"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"x\\\"}\"}");
+		AppendLine("{\"ts\":\"{NOW}\",\"src\":\"mcp\",\"tool\":\"se_a\",\"ms\":1,\"ok\":false,\"argsN\":1,\"err\":\"toolStatusError:第 1 个特征未建成\",\"errText\":\"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"x\\\"}\"}");
+		AppendLine("{\"ts\":\"{NOW}\",\"src\":\"mcp\",\"tool\":\"se_a\",\"ms\":1,\"ok\":false,\"argsN\":1,\"err\":\"toolStatusError:第 2 个特征未建成\",\"errText\":\"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"x\\\"}\"}");
+		AppendLine("{\"ts\":\"{NOW}\",\"src\":\"mcp\",\"tool\":\"se_b\",\"ms\":1,\"ok\":false,\"argsN\":1,\"err\":\"toolStatusError:compile_error\",\"errText\":\"{\\\"status\\\":\\\"compile_error\\\",\\\"compileErrors\\\":[{\\\"code\\\":\\\"CS1510\\\",\\\"message\\\":\\\"ref 或 out 参数必须是可赋值\\\"}],\\\"error CS1510 占位\\\":1}\"}");
+		AppendLine("{\"ts\":\"{NOW}\",\"src\":\"mcp\",\"tool\":\"se_b\",\"ms\":1,\"ok\":false,\"argsN\":1,\"err\":\"toolStatusError:compile_error\",\"errText\":\"{\\\"status\\\":\\\"compile_error\\\",\\\"compileErrors\\\":[{\\\"code\\\":\\\"CS1002\\\",\\\"message\\\":\\\"应输入;\\\"}]\"}");
+		AppendLine("{\"ts\":\"{NOW}\",\"src\":\"mcp\",\"tool\":\"se_c\",\"ms\":1,\"ok\":false,\"argsN\":0,\"err\":\"noResponse\"}");
+
+		string report = ToolUsage.Report(0, "calls", byDay: false);
+
+		Assert.Contains("失败原因 Top N", report);
+		Assert.Contains("窗口内失败 6 条", report);
+		// error 桶(3 条)应排最前,且消息首段进入标签
+		int idxErr = report.IndexOf("error:第 1 个特征未建成", StringComparison.Ordinal);
+		int idxCs = report.IndexOf("CS1510", StringComparison.Ordinal);
+		int idxNoResp = report.IndexOf("无响应", StringComparison.Ordinal);
+		Assert.True(idxErr >= 0, "status:error 应按消息首段归类");
+		Assert.True(idxCs > 0, "compile_error 应带首个 CS 码");
+		Assert.True(idxNoResp > 0, "noResponse 应单独成桶");
+		Assert.True(idxErr < idxCs && idxCs < idxNoResp, "按条数降序:3 > 2 > 1");
+	}
+
+	[Fact]
+	public void Report_无失败_不输出TopN段()
+	{
+		AppendLine("{\"ts\":\"{NOW}\",\"src\":\"mcp\",\"tool\":\"se_test_a\",\"ms\":1,\"ok\":true,\"argsN\":0}");
+		string report = ToolUsage.Report(0, "calls", byDay: false);
+		Assert.Contains("窗口内没有失败记录", report);
+	}
+
+	[Fact]
+	public void Record_errText超长_头尾保留中段标注()
+	{
+		string head = new string('H', 120);
+		string mid = new string('M', 500);
+		string tail = new string('T', 260);
+		ToolUsage.Record("mcp", "se_x", 1, false, "toolStatusError", 0, head + mid + tail);
+
+		string line = AssertSingleLine();
+		using var doc = System.Text.Json.JsonDocument.Parse(line);
+		string errText = doc.RootElement.GetProperty("errText").GetString();
+
+		Assert.StartsWith(head, errText);
+		Assert.EndsWith(tail, errText);
+		Assert.Contains("中略500字", errText);
+		Assert.DoesNotContain(new string('M', 10), errText);   // 中段确实被省略
+		Assert.True(errText.Length < 120 + 260 + 30, "总长应约为头+尾+标注");
+	}
+
 	// ---------- helpers ----------
 
 	private void AppendLine(string line)

@@ -39,6 +39,7 @@ internal static class EvidenceContract
 		StringBuilder sb = new StringBuilder();
 		Exception cur = ex;
 		int depth = 0;
+		string action = null;   // 链上第一个带"下一步动作"的码(P2-2:码表 action 字段)
 		while (cur != null && depth < 6)
 		{
 			if (sb.Length > 0)
@@ -53,13 +54,25 @@ internal static class EvidenceContract
 			if (cur is COMException comEx && comEx.ErrorCode != 0)
 			{
 				sb.Append(" (HRESULT=").Append(CodeCatalog.DescribeHResult(comEx.ErrorCode) ?? ("0x" + comEx.ErrorCode.ToString("X8"))).Append(')');
+				if (action == null)
+				{
+					action = CodeCatalog.DescribeHResultAction(comEx.ErrorCode);
+				}
 			}
 			else if (cur.HResult != 0 && cur.HResult != -2146232828)   // 后者=0x80131600 管理类基异常,没信息量
 			{
 				sb.Append(" (HRESULT=").Append(CodeCatalog.DescribeHResult(cur.HResult) ?? ("0x" + cur.HResult.ToString("X8"))).Append(')');
+				if (action == null)
+				{
+					action = CodeCatalog.DescribeHResultAction(cur.HResult);
+				}
 			}
 			cur = cur.InnerException;
 			depth++;
+		}
+		if (!string.IsNullOrEmpty(action))
+		{
+			sb.Append("。怎么办: ").Append(action);
 		}
 		return sb.ToString();
 	}

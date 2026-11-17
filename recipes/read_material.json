@@ -1,6 +1,6 @@
 {
   "name": "read_material",
-  "title": "读材质：走到 Material 属性对象（供随后 se_describe_object 读 Value）",
+  "title": "读材质：走到 Material 属性对象（供随后 se_batch_read 读 Value）",
   "version": 1,
   "status": "draft",
   "risk": "normal",
@@ -50,8 +50,8 @@
   "verification": {
     "kind": "none",
     "name": "",
-    "expect": "只读配方；跑完对返回的 $3 句柄调 se_describe_object 读 Value 即可"
+    "expect": "只读配方；跑完对返回的 $3 句柄调 se_batch_read（targets:[\"$3\"]，members:[\"Value\"]）读 Value 即可"
   },
   "derivedFrom": "se-sdk-docs/knowledge/probe-recipes.md 第三节「材质名称（走 Properties 属性表）」",
-  "notes": "必须用索引 7 取属性集（PropertySets.Item(7) = MechanicalModeling）；按名字取集会报 RPC_E_SERVERFAULT。本配方只走到 Material 对象，材质名在它的 Value 属性上——se_invoke_chain 不支持读属性值以外的操作，所以最后一步要 AI 自己调 se_describe_object($3) 或 se_batch_read。"
+  "notes": "必须用索引 7 取属性集（PropertySets.Item(7) = MechanicalModeling）；按名字取集会报 RPC_E_SERVERFAULT。本配方只走到 Material 对象，材质名在它的 Value 属性上——se_invoke_chain 不支持读属性值以外的操作，所以最后一步要 AI 自己调 se_batch_read(targets:[\"$3\"], members:[\"Value\"]) 读材质名。"
 }

@@ -190,12 +190,9 @@ public static class SelectionTools
 		});
 	}
 
-	[McpServerTool]
-	[Description("查找对象在 Solid Edge 对象模型中的访问路径,返回从 Application 出发的可达路径" +
-		"(如 'Application.ActiveDocument.Sheets.Item(\"39339\").Lines2d.Item(12)'),可直接写进代码。" +
-		"两种用法二选一:①objectId=查选中对象(obj-N)②name=按 Name/Key 全局反查(如 \"38400\"),不需要用户选中。" +
-		"最多列 10 条(先到先得)。单位:SE 内部长度=米(UI 毫米 ×1000)。")]
-	public static string se_find_paths(SolidEdgeContext context, [Description("对象编号,如 obj-1(se_get_selection 返回);与 name 二选一")] string objectId = null, [Description("按对象 Name/Key 全局反查路径,如 \"38400\" 或 \"Circle2d 38400\";与 objectId 二选一")] string name = null)
+	// 2026-11-16 工具面精简:se_find_paths 已从 MCP 工具面撤下(探查类工具改由 se_script_run 承担),
+	// 方法本体保留供 CLI --paths 使用。
+	internal static string se_find_paths(SolidEdgeContext context, [Description("对象编号,如 obj-1(se_get_selection 返回);与 name 二选一")] string objectId = null, [Description("按对象 Name/Key 全局反查路径,如 \"38400\" 或 \"Circle2d 38400\";与 objectId 二选一")] string name = null)
 	{
 		try
 		{
@@ -235,7 +232,7 @@ public static class SelectionTools
 							timedOut = true,
 							pathsFound = 0,
 							paths = listByName,
-							message = "25 秒遍历预算用尽且未找到目标,可能在大文档深处。建议用 se_walk_object 逐层下钻缩小范围后重试。"
+							message = "25 秒遍历预算用尽且未找到目标,可能在大文档深处。建议用 se_script_run 写脚本按已知路径逐层下钻缩小范围后重试。"
 						});
 					}
 					return JsonSerializer.Serialize(new
@@ -274,7 +271,7 @@ public static class SelectionTools
 						timedOut = true,
 						pathsFound = 0,
 						paths = list,
-						message = "25 秒遍历预算用尽且未找到路径。可改用 se_walk_object 按路径逐层探索(快)。"
+						message = "25 秒遍历预算用尽且未找到路径。可改用 se_script_run 按已知路径逐层探索(快)。"
 					});
 				}
 				return JsonSerializer.Serialize(new
@@ -286,7 +283,7 @@ public static class SelectionTools
 					pathsFound = list.Count,
 					paths = list,
 					truncated = objectExplorer.TimedOut,
-					hint = (objectExplorer.TimedOut ? "遍历超出 25 秒时间预算已提前停止,已返回部分路径。可改用 se_walk_object 按路径逐层探索(快)。" : null)
+					hint = (objectExplorer.TimedOut ? "遍历超出 25 秒时间预算已提前停止,已返回部分路径。可改用 se_script_run 按已知路径逐层探索(快)。" : null)
 				});
 			});
 		}
@@ -322,15 +319,10 @@ public static class SelectionTools
 		}
 	}
 
-	[McpServerTool]
-	[Description("详细描述选中对象(obj-N):列出实现的全部接口、所有属性(含实时值)、所有方法(含签名),每个接口分别列。属性除 name/type/value 外附:" +
-		"readable(本次是否读到)、writable(能否写;false=只读,如 Pattern.NumberOfOccurrences;null=未知)、" +
-		"enumType/enumConstant(VT_USERDEFINED 裸数字翻译)、unitNote(长度附 mm、角度附度)。" +
-		"readable=false 的读它会抛异常,名字见 unreadableProperties,别反复试。方法已过滤 AddRef/Release/QueryInterface 等 IDispatch 底层方法。" +
-		"数值为 SE 内部单位:长度米(UI 毫米 ×1000)、角度弧度;enumConstant 为 null 时查 SDK 文档,不要猜。\n" +
-			"分工:跨多对象读同名成员用 se_batch_read;只看树结构(子集合/子对象名单)用 se_walk_object。")]
-	public static string se_describe_object(SolidEdgeContext context, [Description("对象编号,如 obj-1")] string objectId, [Description("可选,summary=精简模式:只返回可读属性(最多 60 个,仅 name/type/value)+方法名列表,适合先概览再下钻;" +
-		"默认 full=全量(含 readable/enumType/enumConstant/unitNote 与完整方法签名)")] string mode = null)
+	// 2026-11-16 工具面精简:se_describe_object 已从 MCP 工具面撤下。
+	// 读值职责由 se_batch_read 承担(targets=[obj-N] + members=...),列成员职责由 se_script_run + ITypeInfo 模板承担。
+	// 方法本体保留供 CLI --describe 使用。
+	internal static string se_describe_object(SolidEdgeContext context, string objectId, string mode = null)
 	{
 		try
 		{

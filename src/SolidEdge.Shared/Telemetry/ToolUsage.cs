@@ -5,6 +5,7 @@ using System.IO;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace SolidEdge.Spy.McpServer.Telemetry;
 
@@ -63,7 +64,7 @@ internal static class ToolUsage
 			}
 			if (!string.IsNullOrEmpty(errText))
 			{
-				sb.Append(",\"errText\":\"").Append(Escape(Truncate(errText, 300))).Append('"');
+				sb.Append(",\"errText\":\"").Append(Escape(TruncateHeadTail(errText, 120, 260))).Append('"');
 			}
 			sb.Append('}');
 			string line = sb.ToString();
@@ -127,6 +128,8 @@ internal static class ToolUsage
 			AppendByTool(sb, window, sortBy);
 		}
 
+		AppendFailureReasons(sb, window);
+
 		List<string> used = new List<string>();
 		foreach (Row r in window)
 		{
@@ -147,6 +150,9 @@ internal static class ToolUsage
 		internal long Ms;
 		internal bool Ok;
 		internal int ArgsN;
+		// P2-0(2026-11-13):失败原因维度——落盘一直有,读取端从来没读过,Report 拿它做 Top N
+		internal string Err;
+		internal string ErrText;
 	}
 
 	private sealed class Agg
@@ -194,6 +200,8 @@ internal static class ToolUsage
 				row.Ms = GetLong(root, "ms");
 				row.Ok = GetBool(root, "ok");
 				row.ArgsN = (int)GetLong(root, "argsN");
+				row.Err = GetString(root, "err");
+				row.ErrText = GetString(root, "errText");
 				rows.Add(row);
 			}
 			catch
@@ -403,6 +411,112 @@ internal static class ToolUsage
 		return names;
 	}
 
+	/// <summary>
+	/// P2-0(2026-11-13):失败原因 Top N——把 err/errText 归成可读的桶,按条数排序。
+	/// 归类优先级:无响应 > toolError > 结构化 status(compile_error/exit_nonzero/timeout/partial)
+	/// > status:error 的消息首段 > HRESULT > err 原文首段。查不出就落"(无 err 明细)",不猜。
+	/// </summary>
+	private static void AppendFailureReasons(StringBuilder sb, List<Row> window)
+	{
+		int totalFail = 0;
+		Dictionary<string, int> buckets = new Dictionary<string, int>(StringComparer.Ordinal);
+		foreach (Row r in window)
+		{
+			if (r.Ok)
+			{
+				continue;
+			}
+			totalFail++;
+			string label = ReasonLabel(r);
+			int n;
+			buckets.TryGetValue(label, out n);
+			buckets[label] = n + 1;
+		}
+		if (totalFail == 0)
+		{
+			sb.Append(Environment.NewLine).Append("失败原因 Top N:窗口内没有失败记录。");
+			return;
+		}
+
+		List<KeyValuePair<string, int>> list = new List<KeyValuePair<string, int>>(buckets);
+		list.Sort(delegate (KeyValuePair<string, int> x, KeyValuePair<string, int> y)
+		{
+			int c = y.Value.CompareTo(x.Value);
+			return (c != 0) ? c : string.CompareOrdinal(x.Key, y.Key);
+		});
+
+		sb.Append(Environment.NewLine);
+		sb.Append("=== 失败原因 Top N（窗口内失败 ").Append(totalFail).Append(" 条） ===").Append(Environment.NewLine);
+		const int TopN = 12;
+		for (int i = 0; i < list.Count && i < TopN; i++)
+		{
+			long pct = (list[i].Value * 100L) / totalFail;
+			sb.Append("  ").Append(list[i].Key.PadRight(46)).Append(list[i].Value.ToString(CultureInfo.InvariantCulture).PadLeft(6))
+				.Append('(').Append(pct).Append("%)").Append(Environment.NewLine);
+		}
+		if (list.Count > TopN)
+		{
+			int rest = 0;
+			for (int i = TopN; i < list.Count; i++)
+			{
+				rest += list[i].Value;
+			}
+			sb.Append("  ……其余 ").Append(list.Count - TopN).Append(" 类").Append(rest).Append(" 条").Append(Environment.NewLine);
+		}
+	}
+
+	/// <summary>单条失败归到哪个桶。只认能从记录里客观提取的标记,不猜。</summary>
+	private static string ReasonLabel(Row r)
+	{
+		string err = r.Err ?? "";
+		if (err == "noResponse")
+		{
+			return "无响应(超时/取消,没收到结果)";
+		}
+		if (err.StartsWith("rowFailures:", StringComparison.Ordinal))
+		{
+			return "rowFailures(信封行级失败,如 batch_read 部分成员读不出)";
+		}
+		if (err.StartsWith("toolError", StringComparison.Ordinal))
+		{
+			return "toolError(isError 协议错误)";
+		}
+		string t = r.ErrText ?? "";
+		foreach (string s in StructuredStatuses)
+		{
+			if (t.IndexOf("\"status\":\"" + s + "\"", StringComparison.Ordinal) >= 0)
+			{
+				if (s == "compile_error")
+				{
+					Match cs = Regex.Match(t, "error (CS\\d+)");
+					return cs.Success ? ("compile_error(首次=" + cs.Groups[1].Value + ")") : "compile_error";
+				}
+				return s;
+			}
+		}
+		if (t.IndexOf("\"status\":\"error\"", StringComparison.Ordinal) >= 0)
+		{
+			string head = err.StartsWith("toolStatusError:", StringComparison.Ordinal) ? err.Substring("toolStatusError:".Length) : err;
+			if (head.Length == 0)
+			{
+				head = "(无明细)";
+			}
+			return "error:" + head.Substring(0, Math.Min(28, head.Length));
+		}
+		Match hrx = Regex.Match(err.Length > 12 ? err : t, "0x[0-9A-Fa-f]{8}");
+		if (hrx.Success)
+		{
+			return "HRESULT " + hrx.Value.ToUpperInvariant();
+		}
+		if (err.Length > 0)
+		{
+			return err.Substring(0, Math.Min(28, err.Length));
+		}
+		return "(无 err 明细)";
+	}
+
+	private static readonly string[] StructuredStatuses = { "compile_error", "exit_nonzero", "timeout", "partial" };
+
 	private static string Escape(string s)
 	{
 		if (string.IsNullOrEmpty(s))
@@ -412,7 +526,7 @@ internal static class ToolUsage
 		return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
 	}
 
-	/// <summary>L14：错误原文截断（留尾不留头会丢前缀语义，故从头截）。</summary>
+	/// <summary>L14：错误原文截断(留尾不留头会丢前缀语义,故从头截)。</summary>
 	private static string Truncate(string s, int max)
 	{
 		if (string.IsNullOrEmpty(s) || s.Length <= max)
@@ -420,5 +534,15 @@ internal static class ToolUsage
 			return s;
 		}
 		return s.Substring(0, max);
+	}
+
+	/// <summary>P2-0：errText 头 120+尾 260——头有 status/name,尾有编译器报错尾部/汇总,中段标注省略字数。</summary>
+	private static string TruncateHeadTail(string s, int head, int tail)
+	{
+		if (string.IsNullOrEmpty(s) || s.Length <= head + tail)
+		{
+			return s;
+		}
+		return s.Substring(0, head) + "…[中略" + (s.Length - head - tail).ToString(CultureInfo.InvariantCulture) + "字]…" + s.Substring(s.Length - tail);
 	}
 }

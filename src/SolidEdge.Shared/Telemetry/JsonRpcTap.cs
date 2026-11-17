@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -394,14 +395,26 @@ internal sealed class JsonRpcTap : Stream
 					string text = FirstContentText(resultEl);
 					if (text != null)
 					{
-						foreach (string badStatus in FailureStatusMarkers)
+						// P2-0(2026-11-13):信封自报的行级失败数——此前 batch_read 这类"信封 ok 但行内
+						// COM 失败"的调用被记成 ok:true,行级失败对计量完全不可见(悬空面实验实锤)。
+						Match rf = Regex.Match(text, "\"rowFails\"\\s*:\\s*(\\d+)");
+						if (rf.Success && int.TryParse(rf.Groups[1].Value, out int rowFails) && rowFails > 0)
 						{
-							if (text.IndexOf(badStatus, StringComparison.Ordinal) >= 0)
+							ok = false;
+							err = "rowFailures:" + rowFails;
+							errText = text;
+						}
+						else
+						{
+							foreach (string badStatus in FailureStatusMarkers)
 							{
-								ok = false;
-								err = "toolStatusError:" + TruncateMessage(ExtractErrorMessage(text));
-								errText = text;
-								break;
+								if (text.IndexOf(badStatus, StringComparison.Ordinal) >= 0)
+								{
+									ok = false;
+									err = "toolStatusError:" + TruncateMessage(ExtractErrorMessage(text));
+									errText = text;
+									break;
+								}
 							}
 						}
 					}
@@ -445,16 +458,38 @@ internal sealed class JsonRpcTap : Stream
 		return s.Length > 100 ? s.Substring(0, 100) : s;
 	}
 
-	/// <summary>从业务错误文本({"status":"error","message":"..."})提取 message;非 JSON 时返回原文。</summary>
+	/// <summary>
+	/// 从业务错误文本提取 err 短标签;非 JSON 时返回原文。
+	/// P2-0:compile_error 形态走结构化字段(status/name/compileErrors[0].code+message),
+	/// 生成如 "compile_error name=fill_row2 CS1510:ref 或 out 参数..."——比塞整段 JSON 头准得多。
+	/// </summary>
 	private static string ExtractErrorMessage(string text)
 	{
 		try
 		{
 			using JsonDocument doc = JsonDocument.Parse(text);
-			if (doc.RootElement.ValueKind == JsonValueKind.Object &&
-				doc.RootElement.TryGetProperty("message", out JsonElement m) && m.ValueKind == JsonValueKind.String)
+			if (doc.RootElement.ValueKind == JsonValueKind.Object)
 			{
-				return m.GetString();
+				JsonElement root = doc.RootElement;
+				string status = (root.TryGetProperty("status", out JsonElement st) && st.ValueKind == JsonValueKind.String) ? st.GetString() : null;
+				if (status == "compile_error" && root.TryGetProperty("compileErrors", out JsonElement ce) && ce.ValueKind == JsonValueKind.Array)
+				{
+					foreach (JsonElement e in ce.EnumerateArray())
+					{
+						string code = (e.TryGetProperty("code", out JsonElement c) && c.ValueKind == JsonValueKind.String) ? c.GetString() : null;
+						string msg = (e.TryGetProperty("message", out JsonElement m2) && m2.ValueKind == JsonValueKind.String) ? m2.GetString() : null;
+						if (code == null && msg == null)
+						{
+							continue;
+						}
+						string name = (root.TryGetProperty("name", out JsonElement nm) && nm.ValueKind == JsonValueKind.String) ? nm.GetString() : null;
+						return "compile_error " + (name != null ? ("name=" + name + " ") : "") + (code ?? "") + ":" + (msg ?? "");
+					}
+				}
+				if (root.TryGetProperty("message", out JsonElement m) && m.ValueKind == JsonValueKind.String)
+				{
+					return m.GetString();
+				}
 			}
 		}
 		catch

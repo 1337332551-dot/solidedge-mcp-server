@@ -53,7 +53,12 @@ public static class InvokeTools
 		{
 			return context.Invoke(delegate
 			{
-				ObjectHandle handle = context.GetHandle(objectId);
+				// P1(2026-11-14):用前统一句柄解析——文档类句柄 TTL 探活,断连家族当场报"重新取句柄"
+				(ObjectHandle handle, string staleError) = context.ResolveHandleForUse(objectId);
+				if (staleError != null)
+				{
+					return Error(staleError);
+				}
 				if (handle == null)
 				{
 					return Error("找不到起始对象编号 " + objectId + "。请先调用 se_get_selection 获取。");
@@ -539,7 +544,7 @@ public static class InvokeTools
 	{
 		if (string.IsNullOrWhiteSpace(member))
 		{
-			return (statusJson: null, comResult: null, error: "成员名不能为空。请先用 se_describe_object 查看该对象的可用成员。");
+			return (statusJson: null, comResult: null, error: "成员名不能为空。成员清单可用 se_script_run 探查(ITypeInfo 模板见 skill)。");
 		}
 		if (BlockedMembers.IsBlocked(member.Trim()))
 		{
@@ -572,8 +577,13 @@ public static class InvokeTools
 		catch
 		{
 		}
-		if (comTypeInfo == null)
+		// 2026-11-13:类型信息读不到 / 成员不在默认接口上,不再直接死路。
+		// 真机案例:工程图明细表(Table/PartsList)在表格编辑上下文里 se_invoke_member 报
+		// "无法读取对象(__ComObject)的类型信息",se_invoke_chain 第 1 步就被打断,而同一成员
+		// 用纯 IDispatch 晚绑定其实能调通。兜底逻辑见 RunStepLateBound。
+		if (comTypeInfo == null || ForceLateBound)
 		{
+			string reason = ((comTypeInfo != null) ? "调试开关 SE_MCP_FORCE_LATEBOUND=1 强制走晚绑定" : ExplainMissingTypeInfo(comPtr));
 			try
 			{
 				comPtr?.Dispose();
@@ -581,7 +591,7 @@ public static class InvokeTools
 			catch
 			{
 			}
-			return (statusJson: null, comResult: null, error: "无法读取对象(" + targetObj.GetType().Name + ")的类型信息。");
+			return RunStepLateBound(context, targetObj, typeNameHint, objectId, member, args, "读不到该对象的 COM 类型信息(" + reason + ")");
 		}
 		ComFunctionInfo comFunctionInfo = FindMember(comTypeInfo, member.Trim());
 		if (comFunctionInfo == null)
@@ -593,7 +603,7 @@ public static class InvokeTools
 			catch
 			{
 			}
-			return (statusJson: null, comResult: null, error: "对象(" + targetObj.GetType().Name + ")上找不到成员 \"" + member + "\"。");
+			return RunStepLateBound(context, targetObj, typeNameHint, objectId, member, args, "默认接口 " + comTypeInfo.FullName + " 上找不到该成员");
 		}
 		string text = comFunctionInfo.ToString(includeParameters: true);
 		ComParameterInfo[] parameters = comFunctionInfo.Parameters;
@@ -727,7 +737,7 @@ public static class InvokeTools
 		"args 按签名入参顺序给(int/double/string,也可传 obj-N);out 参数自动识别填充。返回值及 out 里的 COM 对象自动登记为新句柄(obj-N)。" +
 		"propertySet=true 时把 member 当【属性写入】(如 Depth/Visible),args[0] 为新值,会触发模型重算。\n" +
 		"护栏:Delete/Cut/Drop/Erase/Purge/Remove* 等破坏性成员先拒绝,确认需 confirm=true;" +
-		"confirm 只解除拦截、不核验删除证据——建议先用 se_read_model_state 或 se_describe_object 确认目标是 featureHealth=igFeatureFailed 的僵尸再删," +
+		"confirm 只解除拦截、不核验删除证据——建议先用 se_read_model_state 或 se_batch_read 确认目标是 featureHealth=igFeatureFailed 的僵尸再删," +
 		"Warned/Suppressed/RolledBack 一律保留。写操作会记审计日志并通常触发重算;SE_MCP_READONLY=1 可全局禁写。\n" +
 		"注意:查询链路中不要再调 se_get_selection(会清空句柄表)。单位:API 长度/坐标=米(UI 毫米 ×1000),角度=弧度。")]
 	public static string se_invoke_member(SolidEdgeContext context, [Description("对象编号,如 obj-1(se_get_selection 返回)")] string objectId, [Description("成员名(方法或带参属性),如 GetRelatedCount / GetRelated;propertySet=true 时为要写的属性名")] string member, [Description("可选,按成员入参顺序的参数值列表(int/double/string,或 obj-N 对象引用);propertySet=true 时 args[0] 为属性新值")] string[] args = null, [Description("可选,设为 true 表示写属性(PROPERTYPUT),args[0] 为属性新值。默认 false=只读调用")] bool propertySet = false, [Description("可选,破坏性成员(Delete/Cut/Drop/Remove* 等)需显式置 true 才会执行,不确认则直接拒绝。默认 false")] bool confirm = false, [Description("可选(仅 propertySet=true):写后自动回读同名属性比对,默认 true。返回 verified 与 readBack——" +
@@ -737,7 +747,12 @@ public static class InvokeTools
 		{
 			return context.Invoke(delegate
 			{
-				ObjectHandle handle = context.GetHandle(objectId);
+				// P1(2026-11-14):用前统一句柄解析——文档类句柄 TTL 探活,断连家族当场报"重新取句柄"
+				(ObjectHandle handle, string staleError) = context.ResolveHandleForUse(objectId);
+				if (staleError != null)
+				{
+					return Error(staleError);
+				}
 				if (handle == null)
 				{
 					return Error("找不到对象编号 " + objectId + "。请先在本会话内调用 se_get_selection 获取选中对象编号。注意:句柄表存在 MCP server 进程内存中,se_get_selection 与后续工具必须在同一 MCP 会话进程内连续调用;且 se_get_selection 会清空旧句柄表,查询链路中不要重复调用。");
@@ -785,7 +800,7 @@ public static class InvokeTools
 								verified = LooksSame(context, args[0], value, readValue);
 								verifyNote = verified.Value
 									? "回读一致。"
-									: "⚠回读值与写入值不一致:写入 " + args[0] + ",回读 " + readBack + "。可能是 SE 对该属性做了规范化/联动,或该写入实际未生效——请用 se_describe_object 复核该属性的当前值。";
+									: "⚠回读值与写入值不一致:写入 " + args[0] + ",回读 " + readBack + "。可能是 SE 对该属性做了规范化/联动,或该写入实际未生效——请用 se_batch_read 复核该属性的当前值。";
 							}
 							else
 							{
@@ -804,7 +819,7 @@ public static class InvokeTools
 							note = "属性已写入。写属性通常触发模型重算,可用 solidedge-event 的 AfterRecompute 确认。"
 						});
 					}
-					return Error("写属性 " + member.Trim() + " 失败: " + DescribeException(error) + "。请先用 se_describe_object 确认该属性可写、且值类型匹配。");
+					return Error("写属性 " + member.Trim() + " 失败: " + DescribeException(error) + "。请先确认该属性可写、且值类型匹配(成员可写性可用 se_script_run 探查)。");
 				}
 				var (text, _, text2) = RunStep(context, handle.ComObject, handle.TypeName, objectId, member, args);
 				return (text2 != null) ? Error(text2) : text;
@@ -816,7 +831,9 @@ public static class InvokeTools
 			{
 				return Error("COM 对象已断连(文档可能已被关闭,或对象已被删除/句柄失效)。请重新调用 se_get_selection 获取新句柄,不要继续用旧 obj-N。原始错误: " + DescribeException(ex));
 			}
-			return Error("调用成员失败: " + DescribeException(ex) + "。可先用 se_describe_object 核对该成员的签名与参数个数。");
+			// P2-2: E_FAIL 等码的"下一步动作"由码表 action 字段统一提供(DescribeException 追加),
+			// 这里不再重复拼接——全项目唯一异常描述实现,避免双重指引漂移。
+			return Error("调用成员失败: " + DescribeException(ex) + "。可先核对该成员的签名与参数个数(成员清单用 se_script_run 探查)。");
 		}
 	}
 
@@ -875,6 +892,177 @@ public static class InvokeTools
 			return result2;
 		}
 		return text;
+	}
+
+	// ---------------- 晚绑定兜底(类型信息不可用时,2026-11-13) ----------------
+
+	/// <summary>
+	/// 调试开关:SE_MCP_FORCE_LATEBOUND=1 时跳过类型库路径、强制走晚绑定。
+	/// 用途只有一个——兜底通道平时只在"类型信息读不到"时触发,很难在真机复现,
+	/// 有了这个开关就能用一个正常对象验证晚绑定这条代码路径本身(返回里带 lateBound=true)。
+	/// </summary>
+	private static readonly bool ForceLateBound = string.Equals(Environment.GetEnvironmentVariable("SE_MCP_FORCE_LATEBOUND"), "1", StringComparison.Ordinal);
+
+	/// <summary>
+	/// 类型信息不可用时的兜底通道:走 ManualInvoke 的纯 IDispatch 调用(按成员名取 DISPID),
+	/// 完全不依赖类型库元数据,因此对"只暴露 dispinterface""类型库版本对不上""表格编辑上下文"
+	/// 这类对象同样有效。
+	///
+	/// 参数分两轮试:第一轮按字面量智能转换(整数→int、小数→double、true/false→bool、obj-N→对象),
+	/// 第二轮能转数字的仍按字符串传 —— SE 有些成员形参是 VT_VARIANT,吃数字不吃字符串,另一些反之。
+	/// 返回值形状与正常路径一致(多 lateBound/lateBoundReason),COM 对象照常登记句柄,链式 $N 照常可用。
+	/// </summary>
+	private static (string statusJson, object comResult, string error) RunStepLateBound(
+		SolidEdgeContext context, object targetObj, string typeNameHint, string objectId,
+		string member, string[] args, string reason)
+	{
+		string name = member.Trim();
+		object[] typedArgs = BuildLateBoundArgs(context, args, typed: true, out string argError);
+		if (typedArgs == null)
+		{
+			return (statusJson: null, comResult: null, error: argError);
+		}
+		object result;
+		Exception error;
+		if (ManualInvoke.TryInvoke(targetObj, name, typedArgs, out result, out error))
+		{
+			return (BuildLateBoundStatus(context, objectId, name, typeNameHint, reason, result), result, null);
+		}
+		object[] textArgs = BuildLateBoundArgs(context, args, typed: false, out argError);
+		if (textArgs != null && ManualInvoke.TryInvoke(targetObj, name, textArgs, out result, out error))
+		{
+			return (BuildLateBoundStatus(context, objectId, name, typeNameHint, reason, result), result, null);
+		}
+		return (statusJson: null, comResult: null,
+			error: "调用成员 \"" + name + "\" 失败:" + reason + ";退回 IDispatch 晚绑定也失败: " + DescribeException(error)
+				+ "。若该对象刚在 Solid Edge 里被改动过(例如双击进入表格/视图编辑后对象被重建),原句柄可能已失效——"
+				+ "请重新调用 se_get_selection 拿新句柄再试。");
+	}
+
+	/// <summary>晚绑定成功时的返回 JSON:字段与 RunStep 正常路径同构,AI 侧不用区分两种通道。</summary>
+	private static string BuildLateBoundStatus(SolidEdgeContext context, string objectId, string member, string typeNameHint, string reason, object result)
+	{
+		bool isDimension = (typeNameHint ?? "").IndexOf("Dimension", StringComparison.OrdinalIgnoreCase) >= 0;
+		return JsonSerializer.Serialize(new
+		{
+			status = "ok",
+			objectId = objectId,
+			member = member,
+			signature = member + "(…)[晚绑定:类型库签名未知]",
+			parameters = new object[0],
+			returnValue = DescribeValue("return", result, context),
+			outputs = new object[0],
+			lateBound = true,
+			lateBoundReason = reason + ",已用纯 IDispatch 晚绑定调用成功;本次没有类型库签名与 out 参数识别。",
+			unitsNote = (isDimension ? "Solid Edge API 返回的长度/距离/坐标值为内部单位米(m);UI 通常显示毫米(mm),换算 ×1000;角度值为弧度(rad)。" : null)
+		});
+	}
+
+	/// <summary>把 args 转成晚绑定用的实参;obj-N 一律换成 COM 对象。返回 null 表示解析失败(错误在 error)。</summary>
+	private static object[] BuildLateBoundArgs(SolidEdgeContext context, string[] args, bool typed, out string error)
+	{
+		error = null;
+		if (args == null || args.Length == 0)
+		{
+			return Array.Empty<object>();
+		}
+		object[] values = new object[args.Length];
+		for (int i = 0; i < args.Length; i++)
+		{
+			string raw = args[i] ?? "";
+			string text = raw.Trim();
+			if (text.StartsWith("obj-", StringComparison.OrdinalIgnoreCase))
+			{
+				ObjectHandle handle = context.GetHandle(text);
+				if (handle == null)
+				{
+					error = "第 " + (i + 1) + " 个参数的对象编号 " + text + " 不在句柄表里(se_get_selection 会清空句柄表)。";
+					return null;
+				}
+				values[i] = handle.ComObject;
+				continue;
+			}
+			values[i] = typed ? ConvertLateBoundValue(raw) : raw;
+		}
+		return values;
+	}
+
+	/// <summary>
+	/// 晚绑定的单个实参转换:整数→int、小数→double、true/false→bool、其余原样字符串。
+	/// 纯函数,internal 以便单测(不碰 COM)。
+	/// </summary>
+	internal static object ConvertLateBoundValue(string raw)
+	{
+		if (raw == null)
+		{
+			return "";
+		}
+		string text = raw.Trim();
+		if (text.Length == 0)
+		{
+			return raw;
+		}
+		if (bool.TryParse(text, out bool boolValue))
+		{
+			return boolValue;
+		}
+		if (int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int intValue))
+		{
+			return intValue;
+		}
+		if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out double doubleValue))
+		{
+			return doubleValue;
+		}
+		return raw;
+	}
+
+	/// <summary>
+	/// 类型信息为什么读不到:分开说清"对象可能已释放""不暴露类型信息""类型库不认"三种,
+	/// 免得 AI 面对一句"无法读取类型信息"只能瞎猜。
+	/// </summary>
+	private static string ExplainMissingTypeInfo(ComPtr comPtr)
+	{
+		if (comPtr == null || comPtr.IsInvalid)
+		{
+			return "取不到对象的 IUnknown 指针,对象可能已释放";
+		}
+		ITypeInfo typeInfo = null;
+		try
+		{
+			typeInfo = comPtr.TryGetTypeInfo();
+			if (typeInfo == null)
+			{
+				return "对象的 IDispatch::GetTypeInfo 拿不到类型信息";
+			}
+			string typeName;
+			try
+			{
+				typeName = Marshal.GetTypeInfoName(typeInfo);
+			}
+			catch
+			{
+				typeName = "(类型名读不到)";
+			}
+			return "类型名 \"" + typeName + "\" 不在已加载的类型库里";
+		}
+		catch (Exception ex)
+		{
+			return DescribeException(ex);
+		}
+		finally
+		{
+			try
+			{
+				if (typeInfo != null)
+				{
+					Marshal.FinalReleaseComObject(typeInfo);
+				}
+			}
+			catch
+			{
+			}
+		}
 	}
 
 	private static ComFunctionInfo FindMember(ComTypeInfo typeInfo, string member)
@@ -1427,7 +1615,7 @@ public static class InvokeTools
 				type = text,
 				displayName = text2,
 				handle = text3,
-				hint = "已登记句柄,可用 se_describe_object(" + text3 + ") 下钻查看详情。"
+				hint = "已登记句柄,可用 se_batch_read([\"" + text3 + "\"]) 读它的成员值。"
 			};
 		}
 		return new

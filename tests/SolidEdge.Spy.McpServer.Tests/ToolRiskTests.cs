@@ -46,7 +46,7 @@ namespace SolidEdge.Spy.McpServer.Tests
         }
 
         [Fact]
-        public void 登记表恰好25个工具()
+        public void 登记表恰好22个工具()
         {
             // 21(合流前) + se_assembly_build + se_assembly_query(远端装配域,2026-09-22)
             // - se_extrude_on_face(2026-10-05 用户拍板删除,能力由 se_model_build 的 face 锚定覆盖)
@@ -55,22 +55,48 @@ namespace SolidEdge.Spy.McpServer.Tests
             // - se_validate_features(2026-11-07 并入 se_model_build dryRun,旧名走 ToolAliases 别名路由)
             // - se_model_state_snapshot(2026-11-07 并入 se_snapshot_diff scope=faces,旧名走 ToolAliases)
             // - se_verify_model(2026-11-07 并入 se_read_model_state verify=expects,旧名走 ToolAliases)
-            // 纪律:加/删工具必须同时改这里 + mcp-tools.md + SKILL.md §2.1(verify.ps1 只查后两处)
-            Assert.Equal(25, ToolRisk.RegisteredTools.Count());
+            // + se_read_table(2026-11-13 项3,工程图表格只读;2026-10-25 起"工具描述即文档",
+            //   语义只写进工具描述,verify.ps1 反向检查文档不重复——本测试是唯一的计数锚)
+            // - se_walk_object / se_describe_object / se_find_paths / se_capture_viewport
+            //   (2026-11-16 工具面精简:探查统一走 se_script_run,截图走脚本 SaveAsImage;26→22)
+            Assert.Equal(22, ToolRisk.RegisteredTools.Count());
+        }
+
+        // ---------- 已撤下工具的替代指路(2026-11-16 工具面精简) ----------
+
+        [Theory]
+        [InlineData("se_walk_object", "se_script_run")]
+        [InlineData("se_describe_object", "se_batch_read")]
+        [InlineData("se_find_paths", "se_script_run")]
+        [InlineData("se_capture_viewport", "se_script_run")]
+        public void 已撤下工具给出替代指路_且目标仍在登记表(string retired, string replacement)
+        {
+            var hint = ToolRisk.RetiredHintOf(retired);
+            Assert.NotNull(hint);
+            Assert.Contains(replacement, hint);
+            // 不变式:指路里点名的工具必须真实存在——否则等于把 AI 从坑里引到另一个坑
+            Assert.True(ToolRisk.TierOf(replacement).HasValue, "指路目标未登记: " + replacement);
+            // 撤下的名字不能还留在登记表:留着就轮不到 retired 分支(Check 会先按档位判定)
+            Assert.Null(ToolRisk.TierOf(retired));
+        }
+
+        [Fact]
+        public void 在册工具都不命中已撤下表()
+        {
+            foreach (var tool in ToolRisk.RegisteredTools)
+            {
+                Assert.Null(ToolRisk.RetiredHintOf(tool));
+            }
         }
 
         [Theory]
         [InlineData("se_get_document", "Read")]
         [InlineData("se_get_selection", "Read")]
-        [InlineData("se_find_paths", "Read")]
-        [InlineData("se_describe_object", "Read")]
-        [InlineData("se_walk_object", "Read")]
         [InlineData("se_batch_read", "Read")]
         [InlineData("se_read_geometry", "Read")]
         [InlineData("se_find_objects", "Read")]
         [InlineData("se_get_variables", "Read")]
         [InlineData("se_view_context", "Read")]
-        [InlineData("se_capture_viewport", "Read")]
         [InlineData("se_snapshot_diff", "Read")]
         [InlineData("se_read_model_state", "Read")]
         [InlineData("se_open_document", "Session")]

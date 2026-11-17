@@ -27,7 +27,7 @@ public static class BatchReadTools
 		"targets 传对象编号数组(如 [\"obj-1\",\"obj-2\"]),members 传成员名数组(属性或无参方法,如 [\"Value\",\"ProjectionLineAngle1\",\"Range\"]);" +
 		"members 省略时只返回身份与几何指纹。每行带 identity(类型|Name|Key)、geometric(与 ID 无关的几何指纹,重建后仍一致,适合幂等判据)" +
 		"与 values(成员名→值/类型/单位提示)。纯只读;读不到的成员进 errors。单位:API 长度=米、角度=弧度(unitNote=true 时附 mm/度换算)。\n" +
-			"分工:单对象全接口/方法发现用 se_describe_object;本工具=跨对象扇出+几何指纹(幂等判据)。")]
+			"分工:单对象也走本工具(targets=[\"obj-1\"]);全接口/方法清单发现用 se_script_run 探查。")]
 	public static string se_batch_read(
 		SolidEdgeContext context,
 		[Description("对象编号列表,如 [\"obj-1\",\"obj-2\"];单个对象也请用数组")] string[] targets,
@@ -57,6 +57,7 @@ public static class BatchReadTools
 	{
 		var rows = new List<object>();
 		int okCount = 0;
+		int rowFails = 0;   // P2-0:行级成员读取失败总数(信封自报,供 tap 计量)
 		foreach (string raw in targets)
 		{
 			string targetId = (raw ?? "").Trim();
@@ -85,7 +86,11 @@ public static class BatchReadTools
 					Exception readErr;
 					if (!ManualInvoke.TryInvoke(com, name, null, out val, out readErr))
 					{
-						errors[name] = "读取失败: " + DescribeException(readErr) + "。该成员可能需要参数、写成属性(用 se_invoke_member propertySet)或不属于该对象的接口。";
+						// P2-2: 旧 hint 是错误归因(把"句柄失效"误诊成"成员不存在"),改为有序排查
+						errors[name] = "读取失败: " + DescribeException(readErr)
+							+ "。排查顺序:① 若近期改过拓扑/参数(重算/重建),旧几何对象句柄可能已失效——重新取对象(se_find_objects/se_get_selection)后再读;"
+							+ "② 核对该成员是否需要参数(需要参数的方法/只写属性会报同类错误,成员签名用 se_script_run 探查);"
+							+ "③ 消息里的内部 HRESULT 可按码表判断具体原因。";
 						continue;
 					}
 					values[name] = DescribeValue(context, val, name, unitNote);
@@ -95,7 +100,7 @@ public static class BatchReadTools
 			rows.Add(new
 			{
 				target = targetId,
-				status = "ok",
+				status = (errors.Count > 0) ? "partial" : "ok",   // P2-0:有行级失败就如实标,不再顶着 ok
 				type = handle.TypeName,
 				displayName = handle.DisplayName,
 				identity = includeFingerprint ? ObjectFingerprint.Identity(com) : null,
@@ -104,6 +109,7 @@ public static class BatchReadTools
 				errors = (errors.Count > 0) ? errors : null
 			});
 			okCount++;
+			rowFails += errors.Count;
 		}
 
 		return JsonSerializer.Serialize(new
@@ -111,6 +117,7 @@ public static class BatchReadTools
 			status = "ok",
 			count = rows.Count,
 			ok = okCount,
+			rowFails = rowFails,   // P2-0:行级失败计数——JsonRpcTap 据此把该调用记为失败,不再"假成功"
 			rows = rows,
 			unitNote = "Solid Edge API 返回的长度/距离/坐标值为内部单位米(m),UI 显示毫米(mm) 换算 ×1000;角度值为弧度(rad)。",
 			hint = "幂等/回归对比请用 geometric 字段(与对象 ID 无关,重建后依然一致);要改属性用 se_invoke_member(propertySet=true,可加 verify=true 自动回读校验);要存/比整批状态用 se_snapshot_diff。"
@@ -133,12 +140,12 @@ public static class BatchReadTools
 			try
 			{
 				handle = context.AddHandle(value, typeName ?? "(未知)", display ?? "(无名称)");
-				hint = "已登记句柄 " + handle + ",可用 se_describe_object 下钻。";
+				hint = "已登记句柄 " + handle + ",可再传给本工具的 targets 继续读成员值。";
 			}
 			catch (Exception ex)
 			{
 				// P3-2b:句柄登记失败不再静默吞,值照常返回但说明下钻不可用及原因
-				hint = "句柄登记失败(本条无法用 se_describe_object 下钻): " + ex.Message;
+				hint = "句柄登记失败(本条拿到的是值快照,后续无法再用句柄下钻): " + ex.Message;
 			}
 			return new { value = display, type = typeName, handle = handle, hint = hint };
 		}

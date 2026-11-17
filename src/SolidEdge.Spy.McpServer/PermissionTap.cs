@@ -202,6 +202,18 @@ internal sealed class PermissionTap : Stream
 			ToolAliases.AliasMapping alias;
 			if (!ToolAliases.TryResolve(tool, out alias))
 			{
+				// 已撤下工具(2026-11-16 工具面精简):撤下≠合并,没有新名可改写,但也别让 SDK 回裸的
+				// "Tool not found"——直接给出替代路径,AI 照着就能继续。放在 ToolRisk.Check 之前:
+				// full 模式下 Check 对未登记工具是放行的,晚了就拦不住。
+				string retiredHint = ToolRisk.RetiredHintOf(tool);
+				if (retiredHint != null)
+				{
+					WriteDeny(idJson, tool, "已拒绝:工具 " + tool + " 已在 2026-11-16 工具面精简中撤出。" + retiredHint);
+					AuditLog.Write(tool, "-", "(tools/call retired)", false, "-", InvocationRisk.Normal, false,
+						"retired tool, hint returned");
+					return true;
+				}
+
 				// readonly 特例(带参数感知):se_model_build 且 dryRun=true 是纯静态校验,不碰 COM,
 				// 按 Read 档放行(se_validate_features 并入后的只读离线校验保底,见 ToolRisk.Check 重载)。
 				string deny = ToolRisk.Check(tool, TryGetArgumentsBool(prms, "dryRun"));

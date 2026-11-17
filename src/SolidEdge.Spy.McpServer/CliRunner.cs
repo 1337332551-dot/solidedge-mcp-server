@@ -534,6 +534,43 @@ internal static class CliRunner
 					Console.WriteLine(ViewContextTools.se_view_context(context, "map", (args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal)) ? args[1] : null, null, "view", null, null));
 					result = 0;
 					break;
+				case "--invoke":
+				{
+					// 用法: solidedge-mcp --invoke [--obj obj-N] <成员> [参数1 参数2 ...]
+					// 目标缺省=当前选中对象(同 --batchread)。CLI 每次是新进程,obj-N 只在本次进程内有效;
+					// 主要用途:验证 se_invoke_member 的通道行为(含 SE_MCP_FORCE_LATEBOUND=1 的晚绑定兜底)。
+					string invokeTarget = null;
+					List<string> invokeTokens = new List<string>();
+					for (int i = 1; i < args.Length; i++)
+					{
+						if (string.Equals(args[i], "--obj", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+						{
+							invokeTarget = args[++i];
+							continue;
+						}
+						invokeTokens.Add(args[i]);
+					}
+					if (invokeTokens.Count == 0)
+					{
+						Console.WriteLine("缺少成员名。用法: solidedge-mcp --invoke [--obj obj-N] <成员> [参数...]");
+						result = 1;
+						break;
+					}
+					if (invokeTarget == null)
+					{
+						invokeTarget = ExtractFirstObjId(SelectionTools.se_get_selection(context));
+					}
+					if (string.IsNullOrWhiteSpace(invokeTarget))
+					{
+						Console.WriteLine("没拿到对象句柄(选择集为空且没有活动文档?)。");
+						result = 1;
+						break;
+					}
+					string[] invokeArgList = (invokeTokens.Count > 1) ? invokeTokens.GetRange(1, invokeTokens.Count - 1).ToArray() : null;
+					Console.WriteLine(InvokeTools.se_invoke_member(context, invokeTarget, invokeTokens[0], invokeArgList));
+					result = 0;
+					break;
+				}
 				case "--batchread":
 				{
 					// 用法: solidedge-mcp --batchread <成员1,成员2,...> [objId]   (objId 缺省=当前选中对象/活动文档)
@@ -983,6 +1020,7 @@ internal static class CliRunner
 		Console.WriteLine("  solidedge-mcp --cs <脚本.cs> [超时秒]           编译并运行一次性 C# 脚本(se_script_run 冒烟)");
 		Console.WriteLine("  solidedge-mcp --viewctx [图页名]               视图↔编辑上下文映射判定(se_view_context 冒烟)");
 		Console.WriteLine("  solidedge-mcp --batchread <成员1,成员2,...> [objId]  批量读属性(se_batch_read 冒烟,objId 缺省=选中对象)");
+		Console.WriteLine("  solidedge-mcp --invoke [--obj obj-N] <成员> [参数...]  调成员(se_invoke_member 冒烟;目标缺省=选中对象)");
 		Console.WriteLine("  solidedge-mcp --snap <save|diff|list|drop> <名字> [objId]  对象快照/差异(se_snapshot_diff 冒烟)");
 		Console.WriteLine("  solidedge-mcp --usage [天数] [--all] [--by day] [--sort calls|ms|last|fail]  工具调用统计(默认近 7 天,按工具)");
 		Console.WriteLine("  solidedge-mcp --recipes                      列出全部配方(名称/状态/参数/来源目录,纯本地)");

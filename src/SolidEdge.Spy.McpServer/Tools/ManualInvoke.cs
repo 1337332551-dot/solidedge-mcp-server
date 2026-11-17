@@ -146,7 +146,9 @@ internal static class ManualInvoke
 					}
 					if (pExcepInfo.scode != 0)
 					{
-						text = text + ", scode=0x" + pExcepInfo.scode.ToString("X8");
+						// P2-2: scode 是真实失败原因(外层 hr 只是 DISP_E_EXCEPTION 包装),接码表翻成人话
+						string scodeDesc = CodeCatalog.DescribeHResult(pExcepInfo.scode);
+						text = text + ", scode=0x" + pExcepInfo.scode.ToString("X8") + (scodeDesc != null ? (" (" + scodeDesc + ")") : "");
 					}
 					throw new COMException(text, iDsOfNames);
 				}
@@ -211,7 +213,9 @@ internal static class ManualInvoke
 					}
 					if (pExcepInfo.scode != 0)
 					{
-						text = text + ", scode=0x" + pExcepInfo.scode.ToString("X8");
+						// P2-2: scode 是真实失败原因(外层 hr 只是 DISP_E_EXCEPTION 包装),接码表翻成人话
+						string scodeDesc = CodeCatalog.DescribeHResult(pExcepInfo.scode);
+						text = text + ", scode=0x" + pExcepInfo.scode.ToString("X8") + (scodeDesc != null ? (" (" + scodeDesc + ")") : "");
 					}
 					throw new COMException(text, iDsOfNames);
 				}
@@ -328,7 +332,9 @@ internal static class ManualInvoke
 					}
 					if (pExcepInfo.scode != 0)
 					{
-						text = text + ", scode=0x" + pExcepInfo.scode.ToString("X8");
+						// P2-2: scode 是真实失败原因(外层 hr 只是 DISP_E_EXCEPTION 包装),接码表翻成人话
+						string scodeDesc = CodeCatalog.DescribeHResult(pExcepInfo.scode);
+						text = text + ", scode=0x" + pExcepInfo.scode.ToString("X8") + (scodeDesc != null ? (" (" + scodeDesc + ")") : "");
 					}
 					throw new COMException(text, hr);
 				}

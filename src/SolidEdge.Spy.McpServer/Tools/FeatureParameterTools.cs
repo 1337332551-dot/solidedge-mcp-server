@@ -210,7 +210,7 @@ public static class FeatureParameterTools
 							action = "inspect",
 							next = new[]
 							{
-								"se_describe_object(该特征句柄) 看成员名与 writable 标记",
+								"se_script_run 探查该特征句柄的成员名与可写性(ITypeInfo 模板见 skill)",
 								"se_read_model_state 确认特征名对不对(用 Features 里的 Name)",
 								"若是孔数,确认该特征是 pattern 且载体轮廓还在(se_get_variables list 里能看到 Bolt_R 说明种子孔在)"
 							}

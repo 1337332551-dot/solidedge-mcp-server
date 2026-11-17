@@ -363,7 +363,7 @@ public static class SnapshotTools
 		}
 		if (ti == null)
 		{
-			unreadable.Add("(无法获取 COM 类型信息,未能枚举属性;请改用集合目标或 se_describe_object)");
+			unreadable.Add("(无法获取 COM 类型信息,未能枚举属性;请改用集合目标,或用 se_script_run 探查)");
 			try { ptr?.Dispose(); } catch { }
 			return;
 		}

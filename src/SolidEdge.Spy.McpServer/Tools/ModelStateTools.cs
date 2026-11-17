@@ -116,7 +116,10 @@ public static class ModelStateTools
 		object doc;
 		if (!string.IsNullOrWhiteSpace(objectId))
 		{
-			ObjectHandle h = context.GetHandle(objectId);
+			// P1(2026-11-14):用前统一句柄解析——断连家族当场报"重新取句柄"
+			(ObjectHandle h, string staleError) = context.ResolveHandleForUse(objectId);
+			if (staleError != null)
+				return Error(staleError);
 			if (h == null || h.ComObject == null)
 				return Error("找不到对象编号 " + objectId + "。请先 se_get_selection，或省略 objectId 用活动文档。");
 			doc = h.ComObject;

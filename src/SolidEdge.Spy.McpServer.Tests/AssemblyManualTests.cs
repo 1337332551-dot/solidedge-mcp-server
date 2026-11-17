@@ -96,8 +96,9 @@ namespace SolidEdge.Spy.McpServer.Tests
         /// 全 server 的 [Description] 总量(工具级 + 参数级)。
         /// 这是 tools/list 常驻成本的唯一度量——它每条 API 请求都会被重发,不像 tool result 能被压缩掉。
         /// 基线:瘦身前 29,224,2026-10-25 瘦身后实测 16,995。超顶了就说明又要开始膨胀。
+        /// 2026-11-16 工具面精简 26→22(撤下 walk/describe/find_paths/capture_viewport)后,门限随之下调。
         /// </summary>
-        private const int ServerDescriptionBudget = 17000;
+        private const int ServerDescriptionBudget = 15000;   // 2026-11-16 精简后实测 14,583,余量 417
 
         /// <summary>单工具上限,防止某一个工具重新膨胀(瘦身前 se_model_build 是 6,420)。</summary>
         private const int SingleToolBudget = 1200;

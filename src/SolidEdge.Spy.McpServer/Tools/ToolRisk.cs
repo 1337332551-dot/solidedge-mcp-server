@@ -42,22 +42,22 @@ internal static class ToolRisk
 {
 	// ⚠️ 新增 [McpServerTool] 工具时必须同步登记,否则只读模式下被 fail-closed 拒绝。
 	//    有单测"全部McpServerTool方法都已登记"反射对账兜底。
-	private static readonly Dictionary<string, RiskTier> Table = new Dictionary<string, RiskTier>(25, StringComparer.Ordinal)
+	// 2026-11-16 工具面精简(26→22):se_walk_object / se_describe_object / se_find_paths / se_capture_viewport
+	// 退出 MCP 工具面(探查统一走 se_script_run,截图走脚本 SaveAsImage),方法本体保留给 CLI。
+	// 撤下而非合并 → 不进 ToolAliases(别名表只做"旧名→新名"改写),老会话调旧名会被 SDK 报 unknown tool。
+	private static readonly Dictionary<string, RiskTier> Table = new Dictionary<string, RiskTier>(22, StringComparer.Ordinal)
 	{
-		// ---- Read 档(14):只读查询/静态校验/瞬态视图,不产生模型副作用 ----
+		// ---- Read 档(10):只读查询/静态校验/瞬态视图,不产生模型副作用 ----
 		["se_get_document"] = RiskTier.Read,
 		["se_get_selection"] = RiskTier.Read,
-		["se_find_paths"] = RiskTier.Read,
-		["se_describe_object"] = RiskTier.Read,
-		["se_walk_object"] = RiskTier.Read,
 		["se_batch_read"] = RiskTier.Read,
 		["se_read_geometry"] = RiskTier.Read,
 		["se_find_objects"] = RiskTier.Read,       // 按条件枚举 faces/lines/dimensions/occurrences,只读查询不碰模型
 		["se_read_model_state"] = RiskTier.Read,   // 拓扑/特征树只读,不碰建模通道
+		["se_read_table"] = RiskTier.Read,         // 工程图表格只读(2026-11-13 项3;反射晚绑定,不改任何东西)
 		// se_model_state_snapshot(2026-11-07 并入 se_snapshot_diff scope=faces,见 ToolAliases)
 		["se_get_variables"] = RiskTier.Read,      // 默认 action=list/get 只读;set/add 在工具内部按 action 拦(只读模式拒绝)
 		["se_view_context"] = RiskTier.Read,
-		["se_capture_viewport"] = RiskTier.Read,
 		["se_snapshot_diff"] = RiskTier.Read,      // 本地快照 store,不碰 COM
 		// se_validate_features(2026-11-07 并入 se_model_build dryRun,见 ToolAliases;只读模式
 		// 经 Program.cs 特例注册 + Check(tool, dryRun) 特例保住离线校验能力)
@@ -89,6 +89,31 @@ internal static class ToolRisk
 	internal static IEnumerable<string> RegisteredTools
 	{
 		get { return Table.Keys; }
+	}
+
+	/// <summary>
+	/// 已撤下工具 → 替代路径说明(2026-11-16 工具面精简 26→22 的四个)。
+	/// 撤下 ≠ 合并:没有新工具可以改写过去,所以**不进 ToolAliases**(别名表只做旧名→新名的请求改写)。
+	/// 这里只负责把 SDK 的裸 "Tool not found" 换成一句能照做的指路——老会话缓存、历史文档、
+	/// 人的肌肉记忆都会继续调这些名字,静默失败最费时间。
+	/// </summary>
+	private static readonly Dictionary<string, string> Retired = new Dictionary<string, string>(StringComparer.Ordinal)
+	{
+		["se_walk_object"] = "对象树按路径枚举已撤出。改在 se_script_run 里逐层取(ActiveDocument→集合→Item(i)),"
+			+ "或直接用 skill 的 scripts/probe_object.cs(path=Application.ActiveDocument.Xxx.Item(1))。",
+		["se_describe_object"] = "读成员值改用 se_batch_read(targets:[\"obj-N\"], members:[...]);"
+			+ "列成员/可写性用 se_script_run + skill 的 scripts/probe_object.cs。",
+		["se_find_paths"] = "路径反查已撤出(句柄只由 se_get_selection 与 se_invoke_member 返回值产生)。"
+			+ "需要访问路径就在 se_script_run 里逐层取并自行拼接。",
+		["se_capture_viewport"] = "视口截图已撤出(嵌图吃上下文)。目检改在 se_script_run 里 "
+			+ "View.SetCamera→Fit→SaveAsImage 存一张小 JPEG 到 %TEMP%,再用 read_file 读。"
+	};
+
+	/// <summary>查已撤下工具的替代说明;非撤下工具返回 null(零开销常路径)。</summary>
+	internal static string RetiredHintOf(string tool)
+	{
+		string hint;
+		return (tool != null && Retired.TryGetValue(tool, out hint)) ? hint : null;
 	}
 
 	/// <summary>查档位;未登记返回 null。</summary>
@@ -196,7 +221,7 @@ internal static class ToolRisk
 		}
 		return "已拒绝:机械工程师模式下," + tool + " 只允许调用读取类成员(显式白名单如 Models/Count/Item/Body/Name/Status,或名字以 \"get\" 开头的读取方法)或安全落盘成员("
 			+ string.Join("/", EngineerSafeWriteMembers) + "),'" + m + "' 不符合。"
-			+ "建模请走 se_model_build / se_recipe_run,探索请走 se_walk_object / se_describe_object;"
+			+ "建模请走 se_model_build / se_recipe_run,读值请走 se_batch_read,对象探查请走 se_script_run;"
 			+ "如需任意成员调用,请把 MCP 配置里 SE_MCP_MODE 改为 full 后重启会话重载。";
 	}
 

@@ -7,7 +7,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <RootNamespace>SolidEdge.Spy.EventMcp</RootNamespace>
     <AssemblyName>solidedge-event-mcp</AssemblyName>
-    <UseWindowsForms>false</UseWindowsForms>
+    <UseWindowsForms>true</UseWindowsForms>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
@@ -37,6 +37,8 @@
     <Compile Include="..\SolidEdge.Shared\GlobalExceptionHandler.cs" Link="Shared\GlobalExceptionHandler.cs" />
     <Compile Include="..\SolidEdge.Shared\TypeLibGuid.cs" Link="Shared\TypeLibGuid.cs" />
     <Compile Include="..\SolidEdge.Shared\OleMessageFilter.cs" Link="Shared\OleMessageFilter.cs" />
+    <Compile Include="..\SolidEdge.Shared\CommandHelper.cs" Link="Shared\CommandHelper.cs" />
+    <Compile Include="..\SolidEdge.Shared\CategoryIDs.cs" Link="Shared\CategoryIDs.cs" />
 
     <!-- Extensions 中纯逻辑的文件(不依赖 WinForms) -->
     <Compile Include="..\SolidEdge.Shared\Extensions\IntExtensions.cs" Link="Shared\Extensions\IntExtensions.cs" />

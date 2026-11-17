@@ -3769,7 +3769,7 @@ namespace SolidEdge.Spy.McpServer.Tools
             if (badRefs.Count > 0)
             {
                 error = string.Join(";", badRefs) +
-                        " 提示:face 用 se_read_geometry 或 se_describe_object 查 Face.ID;几何变更后 Face.ID 一般不变,但被完全覆盖的面会换新 ID。";
+                        " 提示:face 用 se_read_geometry 查 Face.ID;几何变更后 Face.ID 一般不变,但被完全覆盖的面会换新 ID。";
                 return null;
             }
             return result;
@@ -6531,7 +6531,7 @@ namespace SolidEdge.Spy.McpServer.Tools
                 if (face == null)
                     throw new ArgumentException("找不到 Face.ID=" + fr.FaceId + " 的面(当前实体共 " + total + " 个面:" +
                                                 string.Join(",", ids) + ")。" +
-                                                "几何变更后 Face.ID 会变,先用 se_read_geometry 或 se_describe_object 重新确认。");
+                                                "几何变更后 Face.ID 会变,先用 se_read_geometry 重新确认。");
                 faceId = fr.FaceId;
             }
             else if (fr.Kind == "Point")

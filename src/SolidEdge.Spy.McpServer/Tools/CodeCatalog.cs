@@ -7,13 +7,16 @@ using System.Text.Json;
 
 namespace SolidEdge.Spy.McpServer.Tools;
 
-/// <summary>一个码的说明:官方符号名 + 中文人话。</summary>
-internal sealed class CodeInfo
-{
-    internal string Name;
+	/// <summary>一个码的说明:官方符号名 + 中文人话 + 可选的下一步动作(P2-2)。</summary>
+	internal sealed class CodeInfo
+	{
+		internal string Name;
 
-    internal string Meaning;
-}
+		internal string Meaning;
+
+		/// <summary>该码出现时建议的下一步动作(可为 null——只有高频码手工补了动作)。</summary>
+		internal string Action;
+	}
 
 /// <summary>
 /// 错误码目录(P1-1):把 AI 看不懂的裸码翻译成「码 + 官方名 + 人话」。
@@ -110,19 +113,23 @@ internal static class CodeCatalog
         }
     }
 
-    private static CodeInfo ReadInfo(JsonElement el)
-    {
-        CodeInfo info = new CodeInfo();
-        if (el.TryGetProperty("name", out JsonElement n) && n.ValueKind == JsonValueKind.String)
-        {
-            info.Name = n.GetString();
-        }
-        if (el.TryGetProperty("meaning", out JsonElement m) && m.ValueKind == JsonValueKind.String)
-        {
-            info.Meaning = m.GetString();
-        }
-        return info;
-    }
+	private static CodeInfo ReadInfo(JsonElement el)
+	{
+		CodeInfo info = new CodeInfo();
+		if (el.TryGetProperty("name", out JsonElement n) && n.ValueKind == JsonValueKind.String)
+		{
+			info.Name = n.GetString();
+		}
+		if (el.TryGetProperty("meaning", out JsonElement m) && m.ValueKind == JsonValueKind.String)
+		{
+			info.Meaning = m.GetString();
+		}
+		if (el.TryGetProperty("action", out JsonElement a) && a.ValueKind == JsonValueKind.String)
+		{
+			info.Action = a.GetString();
+		}
+		return info;
+	}
 
     /// <summary>HRESULT 的规范键("0x" + 8 位大写十六进制)。</summary>
     private static string HrKey(int hr)
@@ -160,9 +167,16 @@ internal static class CodeCatalog
         return (sys == null) ? null : (key + ":" + sys);
     }
 
-    /// <summary>取系统本地化消息(Marshal.GetExceptionForHR)。失败返回 null。</summary>
-    private static string SystemMessage(int hr)
-    {
+	/// <summary>按 HRESULT 查码表里手工补的"下一步动作"(P2-2)。没有动作或查不到返回 null。</summary>
+	internal static string DescribeHResultAction(int hr)
+	{
+		CodeInfo info = FindHResult(hr);
+		return (info != null && !string.IsNullOrEmpty(info.Action)) ? info.Action : null;
+	}
+
+	/// <summary>取系统本地化消息(Marshal.GetExceptionForHR)。失败返回 null。</summary>
+	private static string SystemMessage(int hr)
+	{
         try
         {
             Exception ex = Marshal.GetExceptionForHR(hr);

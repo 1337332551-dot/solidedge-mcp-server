@@ -111,5 +111,64 @@ namespace SolidEdge.Spy.McpServer.Tests
             string s = AssemblySpec.DescribeEx(outer);
             Assert.Contains("RPC_E_DISCONNECTED", s);
         }
+
+        // ---------- P2-2: action 字段(下一步动作,2026-11-13) ----------
+
+        [Fact]
+        public void DescribeHResultAction_E_FAIL_有下一步动作()
+        {
+            string a = CodeCatalog.DescribeHResultAction(EFail);
+            Assert.False(string.IsNullOrEmpty(a));
+            Assert.Contains("重新取对象", a);
+        }
+
+        [Fact]
+        public void DescribeHResultAction_连接与占用类码_各带专属指引()
+        {
+            Assert.Contains("完整性级别", CodeCatalog.DescribeHResultAction(unchecked((int)0x800401E3)));
+            Assert.Contains("模态框", CodeCatalog.DescribeHResultAction(unchecked((int)0x80010001)));
+            Assert.Contains("重新", CodeCatalog.DescribeHResultAction(unchecked((int)0x800401FD)));
+        }
+
+        [Fact]
+        public void DescribeHResultAction_无动作码_返回null不编()
+        {
+            Assert.Null(CodeCatalog.DescribeHResultAction(unchecked((int)0x00001234)));
+            Assert.Null(CodeCatalog.DescribeHResultAction(AccessDenied));   // 高频但未配 action
+        }
+
+        [Fact]
+        public void FindHResult_SE专用码0x80040225_已收录()
+        {
+            CodeInfo info = CodeCatalog.FindHResult(unchecked((int)0x80040225));
+            Assert.NotNull(info);
+            Assert.False(string.IsNullOrEmpty(info.Meaning));
+        }
+
+        [Fact]
+        public void DescribeException_E_FAIL_末尾带怎么办()
+        {
+            var ex = new System.Runtime.InteropServices.COMException("测试", EFail);
+            string s = EvidenceContract.DescribeException(ex);
+            Assert.Contains("怎么办", s);
+            Assert.Contains("重新取对象", s);
+        }
+
+        [Fact]
+        public void DescribeException_内层码的动作_也能带出()
+        {
+            var inner = new System.Runtime.InteropServices.COMException("内层", unchecked((int)0x800401FD));
+            var outer = new System.Reflection.TargetInvocationException("外层", inner);
+            string s = EvidenceContract.DescribeException(outer);
+            Assert.Contains("怎么办", s);
+        }
+
+        [Fact]
+        public void DescribeException_无动作异常_不带怎么办段()
+        {
+            var ex = new System.Runtime.InteropServices.COMException("测试", AccessDenied);
+            string s = EvidenceContract.DescribeException(ex);
+            Assert.DoesNotContain("怎么办", s);
+        }
     }
 }

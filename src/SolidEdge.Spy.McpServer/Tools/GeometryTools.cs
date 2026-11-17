@@ -136,7 +136,12 @@ public static class GeometryTools
 				{
 					return ReadModel(context);
 				}
-				ObjectHandle handle = context.GetHandle(target);
+				// P1(2026-11-14):用前统一句柄解析——断连家族当场报"重新取句柄"
+				(ObjectHandle handle, string staleError) = context.ResolveHandleForUse(target);
+				if (staleError != null)
+				{
+					return Error(staleError);
+				}
 				return (handle == null || handle.ComObject == null) ? Error("找不到对象 " + target + "（支持 obj-N 句柄 / 'refplanes' / 'model'）。") : ReadObject(context, handle.ComObject, handle.TypeName);
 			});
 		}
@@ -443,15 +448,10 @@ public static class GeometryTools
 		return false;
 	}
 
-	[McpServerTool]
-	[Description("把当前活动视口截图并【以图片内容直接返回】给多模态 AI 查看(无需 read_file)。" +
-		"orientation:current(默认)/iso/top/front/back/left/right/bottom;默认 Fit 满幅,动过视角/缩放后自动还原原相机。" +
-		"支持 3D 与工程图 DFT(DFT 走 SheetWindow.Fit+SaveAsImage,orientation/zoom 忽略,不还原视角)。" +
-		"内嵌图默认 small 档(≤40KB JPEG 小图,省 token);要大图传 inline=\"full\"(≤1500px PNG,大 token 消耗)——" +
-		"两档都落盘原图并在元数据给路径,看清局部优先用 region 裁剪而不是 full。" +
-		"图片落盘到 %TEMP%\\se_mcp_captures(可用 SE_MCP_CAPTURE_DIR 覆盖;LRU 保留最近 50 张/100MB),元数据给路径。" +
-		"注意:截图时 SE 主窗口会短暂跳前台约 2 秒。典型用法:建模/改参数后目检结果。")]
-	public static List<AIContent> se_capture_viewport(SolidEdgeContext context, [Description("视角:current(默认)/iso/top/front/back/left/right/bottom")] string orientation = "current", [Description("截图前是否 Fit 满幅(默认 true)")] bool fit = true, [Description("Fit 后再 ZoomCamera 的倍率(可选,1 或不传=不缩放)")] double? zoom = null, [Description("落盘原图宽(像素,默认1600;仅 DFT 工程图路线生效,3D 文档按实际窗口尺寸落盘)")] int width = 1600, [Description("落盘原图高(像素,默认1200;仅 DFT 工程图路线生效,3D 文档按实际窗口尺寸落盘)")] int height = 1200, 	[Description("截图后是否还原原视角(默认 true)")] bool restoreCamera = true, [Description("可选:裁剪区域 \"x,y,w,h\"(0~1 比例,相对整幅;如 \"0.3,0.3,0.4,0.4\" 取中央 40%)。用于放大看局部(某个视图/某个孔位/某段文字),裁剪后就地覆盖落盘图并改写元数据里的宽高")] string region = null, [Description("内嵌图档位:small(默认,≤40KB JPEG)/full(≤1500px PNG,大 token);大图看落盘路径即可")] string inline = "small")
+	// 2026-11-16 工具面精简:se_capture_viewport 已从 MCP 工具面撤下。
+	// 目检改走 se_script_run(View.SetCamera → Fit → SaveAsImage 存小 JPEG)→ 再 read_file;
+	// 截图能力本体(CaptureViewport/CliCaptureViewport)保留供 CLI --preview 使用。
+	internal static List<AIContent> se_capture_viewport(SolidEdgeContext context, string orientation = "current", bool fit = true, double? zoom = null, int width = 1600, int height = 1200, bool restoreCamera = true, string region = null, string inline = "small")
 	{
 		try
 		{

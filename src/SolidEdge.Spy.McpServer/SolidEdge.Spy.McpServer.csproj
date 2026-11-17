@@ -34,6 +34,8 @@
     <!-- Solid Edge 互操作程序集(SolidEdge Community 发布;纯 COM 类型定义,不含任何 Siemens 专有代码)。
          版本号 108 对应 SE2022 类型库;其他 SE 版本请按本机安装的 SE 调整(见 scripts/gen_interop.ps1 备选方案) -->
     <PackageReference Include="Interop.SolidEdge" Version="108.0.0" />
+    <!-- sets 表达式求值(不手写解析器):CoreCLR-NCalc 是 NCalc 的 .NET Core 分支,namespace 仍是 NCalc -->
+    <PackageReference Include="CoreCLR-NCalc" Version="2.2.110" />
   </ItemGroup>
 
   <!-- 单元测试工程可访问 internal 成员(Guardrail / ToolRisk / SolidEdgeContext.IsDisconnected 等) -->
