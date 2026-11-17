@@ -58,6 +58,7 @@
     <!-- 传输层工具调用计量(JsonRpcTap)与权限洋葱层共用的流 tap 基础设施 -->
     <Compile Include="..\SolidEdge.Shared\Telemetry\JsonRpcTap.cs" Link="Shared\Telemetry\JsonRpcTap.cs" />
     <Compile Include="..\SolidEdge.Shared\Telemetry\ToolUsage.cs" Link="Shared\Telemetry\ToolUsage.cs" />
+    <Compile Include="..\SolidEdge.Shared\Telemetry\ScriptHistory.cs" Link="Shared\Telemetry\ScriptHistory.cs" />
     <Compile Include="..\SolidEdge.Shared\Telemetry\BuildInfo.cs" Link="Shared\Telemetry\BuildInfo.cs" />
 
     <!-- InteropServices 全套(IDispatch/TypeLib 反射,纯 COM 互操作,无外部依赖) -->
