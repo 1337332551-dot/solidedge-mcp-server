@@ -50,9 +50,9 @@ If you prefer a fat-tool server that maps the whole COM API 1:1, other projects 
 
 | Category | Tools |
 |---|---|
-| Query / read | `se_get_document` `se_get_selection` `se_find_paths` `se_describe_object` `se_walk_object` `se_batch_read` `se_read_geometry` `se_get_variables` `se_view_context` `se_capture_viewport` `se_snapshot_diff` `se_validate_features` `se_assembly_query` |
-| Document session | `se_open_document` `se_new_document` `se_close_document` |
-| Model changing | `se_model_build` `se_invoke_member` `se_invoke_chain` `se_recipe_run` `se_assembly_build` |
+| Query / read | `se_get_document` `se_get_selection` `se_batch_read` `se_read_geometry` `se_find_objects` `se_read_model_state` `se_read_table` `se_get_variables` `se_view_context` `se_snapshot_diff` `se_assembly_query` |
+| Document session | `se_open_document` `se_new_document` `se_save_document` `se_close_document` |
+| Model changing | `se_model_build` `se_set_feature_parameter` `se_invoke_member` `se_invoke_chain` `se_recipe_run` `se_assembly_build` |
 | Escape hatch | `se_script_run` (run a C# script against the COM API) |
 
 Events server (`solidedge-event-mcp`):
@@ -74,12 +74,12 @@ Set the `SE_MCP_MODE` environment variable on the server entry in your MCP confi
 |---|---|
 | `full` *(default)* | All 22 tools allowed |
 | `engineer` | All 22 tools allowed, but the free-form invoke channel (`se_invoke_member`/`se_invoke_chain`) only accepts read-only members — an explicit allowlist of property-style reads (`Models`/`Item`/`Body`/`Name`/…) plus names starting with `get` (e.g. `GetVariables`); model via the guarded tools (`se_model_build`/`se_recipe_run`/`se_assembly_build`) |
-| `readonly` | Only the 13 query tools; model-changing/session/script calls are rejected at the transport layer with a hint on how to switch back |
+| `readonly` | Only the 11 query tools; model-changing/session/script calls are rejected at the transport layer with a hint on how to switch back |
 | anything else | Fail-closed: treated as `readonly` |
 
 Legacy `SE_MCP_READONLY=1` is still honored and maps to `readonly`. Changing the mode requires restarting the MCP session (the AI client reloads the server).
 
-Tool risk tiers behind the gate: **Read** (13 query tools) / **Session** (open/new/close document) / **Model** (6 model-changing tools) / **Escape** (`se_script_run`). Unregistered tools are fail-closed (treated as the highest tier).
+Tool risk tiers behind the gate: **Read** (11 query tools) / **Session** (open/new/save/close document) / **Model** (6 model-changing tools) / **Escape** (`se_script_run`). Unregistered tools are fail-closed (treated as the highest tier).
 
 Other environment variables:
 
@@ -105,7 +105,7 @@ git clone https://github.com/1337332551-dot/solidedge-mcp-server.git
 cd solidedge-mcp
 dotnet build src/SolidEdge.Spy.McpServer -c Release
 dotnet build src/SolidEdge.Spy.EventMcp  -c Release
-dotnet test solidedge-mcp.sln            # 558 unit tests, no Solid Edge required
+dotnet test solidedge-mcp.sln            # 929 unit tests, no Solid Edge required
 ```
 
 No Siemens files are needed from you up front: the COM interop assembly comes from the community-published [`Interop.SolidEdge`](https://www.nuget.org/packages/Interop.SolidEdge) NuGet package (pure type definitions, no Siemens proprietary code is distributed in this repo).
@@ -195,7 +195,7 @@ recipes/                            # example recipe JSON files (see recipes/REA
 scripts/                            # helper scripts (interop generation)
 ```
 
-558 unit tests across the two xUnit projects (`dotnet test solidedge-mcp.sln`).
+929 unit tests across the two xUnit projects (`dotnet test solidedge-mcp.sln`).
 
 ## A middle layer, not a raw API
 
@@ -242,11 +242,11 @@ It doesn't: a popup probe detects modal dialogs and reports their title and butt
 
 ## Project status
 
-The feature-spec JSON — the intermediate representation (IR) that `se_model_build` consumes — is still **rough and evolving**: op coverage, defaults and field names may change between versions. If you build workflows on it, pin a commit and expect churn. A small set of **example recipes** (extrude, revolve, cut, read-only probes, and a guardrail self-test) ships in [`recipes/`](recipes/) — drop your own next to them, or point `SE_MCP_RECIPES_DIR` at another folder. Feedback from real parametric-modeling use cases is especially valuable — open an issue and tell us what you tried to model.
+The feature-spec JSON — the intermediate representation (IR) that `se_model_build` consumes — already covers the core modeling ops: `plane` `extrude` `cut` `revolve` `fillet` `chamfer` `rib` `pattern` `hole` `polarhole` `boltcircle` `loft` `sweep` `helix` `draft` `split` `web_network`, plus 3D curves (`spline3d` `arc3d`) and surface work (`extrude_surface` `loft_surface` `bluesurf` `thicken` `delete_face`). Solid-body ops are validated on real parts; **surface ops are the area still being refined**, so their parameters and defaults may change between versions — pin a commit if you build a workflow on them. A small set of **example recipes** (extrude, revolve, cut, read-only probes, and a guardrail self-test) ships in [`recipes/`](recipes/) — drop your own next to them, or point `SE_MCP_RECIPES_DIR` at another folder. Feedback from real parametric-modeling use cases is especially valuable — open an issue and tell us what you tried to model.
 
 ## Roadmap
 
-- [ ] Stabilize the feature-spec IR (v1)
+- [ ] Refine the surface ops of the feature-spec IR (`bluesurf` / `loft_surface` / `extrude_surface` / `thicken`)
 - [x] Published Release binaries (no SDK needed to try)
 - [x] GitHub Actions CI (build + test on push)
 - [ ] More recipe examples (drawing automation, BOM extraction)
