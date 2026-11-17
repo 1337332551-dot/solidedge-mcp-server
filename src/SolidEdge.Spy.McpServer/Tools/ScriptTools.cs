@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
+using SolidEdge.Spy.McpServer.Telemetry;
 using SolidEdgeFramework;
 
 namespace SolidEdge.Spy.McpServer.Tools;
@@ -141,11 +142,15 @@ public static class ScriptTools
 			codeSource = "inline";
 		}
 
+		// ---- 历史留档基准:用户原始源码(此后 WrapMainWithCrashGuard 会改写 code 变量,指纹必须基于原文) ----
+		string originalCode = code;
+
 		// ---- 护栏:全局只读开关 ----
 		string codeSummary = SummarizeCode(code);
 		if (Guardrail.ReadOnlyEnabled)
 		{
 			AuditLog.Write("se_script_run", name, "Run", false, codeSummary, InvocationRisk.ModelChanging, false, "blocked by guardrail");
+			ScriptHistory.Record(name, codeSource, originalCode, "blocked", null, 0);
 			return Error("已拒绝:全局只读开关处于开启状态(SE_MCP_READONLY=1),脚本通道整体禁用。若确实要运行,请把环境变量 SE_MCP_READONLY 设为 0(或删除)后重启 MCP server。");
 		}
 
@@ -209,6 +214,7 @@ public static class ScriptTools
 			CleanupArtifacts(exePath, interopDst);
 			// 2026-10-25 审计修正:编译失败记 ALLOW 会让台账无法区分"跑了什么"与"什么都没跑",改记 DENY
 			AuditLog.Write("se_script_run", name, "Compile", false, codeSummary, InvocationRisk.ModelChanging, false, "compile error(未运行)");
+			ScriptHistory.Record(name, codeSource, originalCode, "compile_error", null, sw.ElapsedMilliseconds);
 			return JsonSerializer.Serialize(new
 			{
 				status = "compile_error",
@@ -292,6 +298,7 @@ public static class ScriptTools
 
 		// ---- 审计 ----
 		AuditLog.Write("se_script_run", name, "Run", false, codeSummary, InvocationRisk.ModelChanging, true, note ?? ("exitCode=" + exitCode));
+		ScriptHistory.Record(name, codeSource, originalCode, status, exitCode, sw.ElapsedMilliseconds);
 
 		return JsonSerializer.Serialize(new
 		{

@@ -40,6 +40,13 @@ internal static class CliRunner
 			return 0;
 		}
 
+		// 脚本执行历史:同样只读本地文件,不碰 COM(跨会话重复检测/沉淀候选探测的数据源)
+		if (text == "--scripts")
+		{
+			Console.WriteLine(RunScriptsReport(args));
+			return 0;
+		}
+
 		// 配方清单/校验同样只读本地文件、不碰 COM,也放在 using(context) 之前
 		if (text == "--recipes")
 		{
@@ -954,6 +961,32 @@ internal static class CliRunner
 	}
 
 	/// <summary>
+	/// `--scripts [天数] [--all]`
+	/// 读 %LOCALAPPDATA%\SolidEdgeSpy\script-history.jsonl,按成员指纹聚合成重复形态报表
+	/// (纯本地,不连 Solid Edge)。同形态出现 ≥3 次标"沉淀候选"。
+	/// </summary>
+	private static string RunScriptsReport(string[] args)
+	{
+		int days = 30;
+		for (int i = 1; i < args.Length; i++)
+		{
+			if (args[i] == "--all")
+			{
+				days = 0;
+			}
+			else
+			{
+				int d;
+				if (int.TryParse(args[i], out d))
+				{
+					days = d;
+				}
+			}
+		}
+		return ScriptHistory.Report(days);
+	}
+
+	/// <summary>
 	/// 把 "od=220,bore=116,holeCount=8" 转成 JsonElement(CLI 冒烟用,免得为一次自检写 JSON 文件)。
 	/// 数字按数字写,其它按字符串;非法值原样带引号传下去,由工具侧报错。
 	/// </summary>
@@ -1023,6 +1056,7 @@ internal static class CliRunner
 		Console.WriteLine("  solidedge-mcp --invoke [--obj obj-N] <成员> [参数...]  调成员(se_invoke_member 冒烟;目标缺省=选中对象)");
 		Console.WriteLine("  solidedge-mcp --snap <save|diff|list|drop> <名字> [objId]  对象快照/差异(se_snapshot_diff 冒烟)");
 		Console.WriteLine("  solidedge-mcp --usage [天数] [--all] [--by day] [--sort calls|ms|last|fail]  工具调用统计(默认近 7 天,按工具)");
+		Console.WriteLine("  solidedge-mcp --scripts [天数] [--all]           脚本执行历史:按成员指纹聚合的重复形态报表(默认近 30 天,≥3 次标沉淀候选)");
 		Console.WriteLine("  solidedge-mcp --recipes                      列出全部配方(名称/状态/参数/来源目录,纯本地)");
 		Console.WriteLine("  solidedge-mcp --recipe-validate <名字|路径>   静态校验一条配方(不碰 COM)");
 		Console.WriteLine("  solidedge-mcp --recipe-save <脚本名> [--input name:type[:default][:desc]] [--dry]  把沙箱里跑通的脚本固化成配方(不碰 COM)");
