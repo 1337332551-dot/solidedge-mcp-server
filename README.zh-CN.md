@@ -242,7 +242,7 @@ MCP server 由 AI 客户端在会话启动时拉起，任何 `mcp.json` 改动�
 
 ## 项目状态
 
-`se_model_build` 消费的 features JSON——建模中间表示（IR）——已经覆盖基本建模 op：`plane` `extrude` `cut` `revolve` `fillet` `chamfer` `rib` `pattern` `hole` `polarhole` `boltcircle` `loft` `sweep` `helix` `draft` `split` `web_network`，加上 3D 曲线（`spline3d` `arc3d`）与曲面类（`extrude_surface` `loft_surface` `bluesurf` `thicken` `delete_face`）。实体类 op 已在真机零件上验证；**曲面类 op 正在完善**，参数与默认值可能随版本调整——如果工作流依赖它们，建议固定 commit 使用。本仓库自带一组**示例配方**（拉伸、旋转、除料、只读探查，以及一条护栏自检配方），放在 [`recipes/`](recipes/)——自己的配方可以放在它们旁边，或用 `SE_MCP_RECIPES_DIR` 指向别的目录。来自真实参数化建模用例的反馈尤其有价值——欢迎开 issue 告诉你想建什么、卡在哪。
+`se_model_build` 消费的 features JSON——建模中间表示（IR）——已经覆盖基本建模 op：`plane` `extrude` `cut` `revolve` `fillet` `chamfer` `rib` `pattern` `hole` `polarhole` `boltcircle` `loft` `sweep` `helix` `draft` `split` `web_network`，加上 3D 曲线（`spline3d` `arc3d`）与曲面类（`extrude_surface` `loft_surface` `bluesurf` `thicken` `delete_face`）。实体类 op 已在真机零件上验证；**曲面类 op 正在完善**。本仓库自带一组**示例配方**（拉伸、旋转、除料、只读探查，以及一条护栏自检配方），放在 [`recipes/`](recipes/)——自己的配方可以放在它们旁边，或用 `SE_MCP_RECIPES_DIR` 指向别的目录。来自真实参数化建模用例的反馈尤其有价值——欢迎开 issue 告诉你想建什么、卡在哪。
 
 ## Roadmap
 
