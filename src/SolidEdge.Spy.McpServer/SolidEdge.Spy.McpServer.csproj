@@ -64,4 +64,9 @@
     <Compile Include="..\SolidEdge.Shared\InteropServices\*.cs" Link="Shared\InteropServices\%(Filename)%(Extension)" />
   </ItemGroup>
 
+  <!-- 错误码目录:嵌入式资源,CodeCatalog 运行时按 LogicalName 读取(漏了它测试立刻红) -->
+  <ItemGroup>
+    <EmbeddedResource Include="Data\se_code_catalog.json" LogicalName="se_code_catalog.json" />
+  </ItemGroup>
+
 </Project>

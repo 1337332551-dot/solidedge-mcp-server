@@ -1,0 +1,1247 @@
+{
+ "schema": "se-code-catalog/1",
+ "generatedAt": "2026-11-13",
+ "sources": {
+  "hresult": "Windows SDK winerror.h — COM/Win32 HRESULT 标准常量",
+  "seEnums": "interop.SolidEdgeConstantLib.dll 反编译(ilspycmd) — Solid Edge 常量枚举"
+ },
+ "hresults": {
+  "0x00000000": {
+   "name": "S_OK",
+   "meaning": "操作成功"
+  },
+  "0x00000001": {
+   "name": "S_FALSE",
+   "meaning": "操作成功但结果为空/无需处理"
+  },
+  "0x80004001": {
+   "name": "E_NOTIMPL",
+   "meaning": "未实现该功能"
+  },
+  "0x80004002": {
+   "name": "E_NOINTERFACE",
+   "meaning": "对象不支持所请求的接口"
+  },
+  "0x80004003": {
+   "name": "E_POINTER",
+   "meaning": "无效指针(传入了 null)"
+  },
+  "0x80004004": {
+   "name": "E_ABORT",
+   "meaning": "操作被中止"
+  },
+  "0x80004005": {
+   "name": "E_FAIL",
+   "meaning": "未指定的错误(通用失败)",
+   "action": "看上下文两态:① 近期改过拓扑/参数→旧几何对象句柄已失效,重新取对象(se_find_objects/se_get_selection)后再调;② 集合越界→先读 Count/Rows 拿上界再取元素"
+  },
+  "0x8000FFFF": {
+   "name": "E_UNEXPECTED",
+   "meaning": "意外失败(灾难性错误)"
+  },
+  "0x80070005": {
+   "name": "E_ACCESSDENIED",
+   "meaning": "访问被拒绝(权限不足)"
+  },
+  "0x80070006": {
+   "name": "E_HANDLE",
+   "meaning": "句柄无效"
+  },
+  "0x8007000E": {
+   "name": "E_OUTOFMEMORY",
+   "meaning": "内存不足"
+  },
+  "0x80070057": {
+   "name": "E_INVALIDARG",
+   "meaning": "参数无效(通常指向非法/不存在的目标)"
+  },
+  "0x8000000B": {
+   "name": "E_BOUNDS",
+   "meaning": "索引越界"
+  },
+  "0x8000000C": {
+   "name": "E_CHANGED_STATE",
+   "meaning": "对象状态已变化"
+  },
+  "0x8000000D": {
+   "name": "E_ILLEGAL_STATE_CHANGE",
+   "meaning": "非法的状态变更"
+  },
+  "0x8000000E": {
+   "name": "E_ILLEGAL_METHOD_CALL",
+   "meaning": "非法的成员调用(当前状态不允许)"
+  },
+  "0x80020001": {
+   "name": "DISP_E_UNKNOWNINTERFACE",
+   "meaning": "未知接口"
+  },
+  "0x80020003": {
+   "name": "DISP_E_MEMBERNOTFOUND",
+   "meaning": "找不到成员(属性/方法不存在)",
+   "action": "用 se_script_run + scripts/probe_object.cs 列该对象全部成员(ITypeInfo 通道);类型信息读不到时晚绑定会自动兜底"
+  },
+  "0x80020004": {
+   "name": "DISP_E_PARAMNOTFOUND",
+   "meaning": "找不到参数(参数名无效)"
+  },
+  "0x80020005": {
+   "name": "DISP_E_TYPEMISMATCH",
+   "meaning": "类型不匹配(参数类型错误)",
+   "action": "按成员签名传参(签名用 scripts/probe_object.cs 探查):长度=米、角度=弧度、集合/对象传 obj-N 句柄"
+  },
+  "0x80020006": {
+   "name": "DISP_E_UNKNOWNNAME",
+   "meaning": "未知成员名(GetIDsOfNames 失败)",
+   "action": "用 scripts/probe_object.cs 核对成员名;interop IID 不匹配时走晚绑定或 se_script_run 强类型"
+  },
+  "0x80020007": {
+   "name": "DISP_E_NONAMEDARGS",
+   "meaning": "该成员不支持命名参数"
+  },
+  "0x80020008": {
+   "name": "DISP_E_BADVARTYPE",
+   "meaning": "无效的 VARIANT 类型"
+  },
+  "0x80020009": {
+   "name": "DISP_E_EXCEPTION",
+   "meaning": "被调用方抛出异常",
+   "action": "外层只是包装,真实原因在消息里的 scode/内部 HRESULT——按那个码处理"
+  },
+  "0x8002000A": {
+   "name": "DISP_E_OVERFLOW",
+   "meaning": "数值溢出"
+  },
+  "0x8002000B": {
+   "name": "DISP_E_BADINDEX",
+   "meaning": "下标越界",
+   "action": "先读 Count 拿上界再取元素;元素刚被删除也会报这个,重新枚举集合"
+  },
+  "0x8002000C": {
+   "name": "DISP_E_UNKNOWNLCID",
+   "meaning": "未知的区域设置 ID(LCID)"
+  },
+  "0x8002000D": {
+   "name": "DISP_E_ARRAYISLOCKED",
+   "meaning": "数组已锁定"
+  },
+  "0x8002000E": {
+   "name": "DISP_E_BADPARAMCOUNT",
+   "meaning": "参数个数不正确"
+  },
+  "0x8002000F": {
+   "name": "DISP_E_PARAMNOTOPTIONAL",
+   "meaning": "缺少必需参数"
+  },
+  "0x80020010": {
+   "name": "DISP_E_BADCALLEE",
+   "meaning": "无效的调用方"
+  },
+  "0x80020011": {
+   "name": "DISP_E_NOTACOLLECTION",
+   "meaning": "该对象不是集合"
+  },
+  "0x80020012": {
+   "name": "DISP_E_DIVBYZERO",
+   "meaning": "除以零"
+  },
+  "0x80020013": {
+   "name": "DISP_E_BUFFERTOOSMALL",
+   "meaning": "缓冲区太小"
+  },
+  "0x800401F0": {
+   "name": "CO_E_NOTINITIALIZED",
+   "meaning": "COM 库未初始化(需先 CoInitialize)"
+  },
+  "0x800401F1": {
+   "name": "CO_E_ALREADYINITIALIZED",
+   "meaning": "COM 库已初始化"
+  },
+  "0x800401F3": {
+   "name": "CO_E_CLASSSTRING",
+   "meaning": "无效的类字符串(CLSID/ProgID 无效)"
+  },
+  "0x800401F5": {
+   "name": "CO_E_APPNOTFOUND",
+   "meaning": "找不到应用程序"
+  },
+  "0x800401F6": {
+   "name": "CO_E_APPSINGLEUSE",
+   "meaning": "应用程序不能多次启动"
+  },
+  "0x800401FA": {
+   "name": "CO_E_WRONGOSFORAPP",
+   "meaning": "当前操作系统不支持该应用"
+  },
+  "0x800401FB": {
+   "name": "CO_E_OBJNOTREG",
+   "meaning": "对象未注册"
+  },
+  "0x800401FC": {
+   "name": "CO_E_OBJISREG",
+   "meaning": "对象已注册"
+  },
+  "0x800401FD": {
+   "name": "CO_E_OBJNOTCONNECTED",
+   "meaning": "对象未连接到服务器(连接已断开)",
+   "action": "句柄已失效(文档关闭/对象重建):重新 se_get_selection 或重新取对象,不要继续用旧 obj-N"
+  },
+  "0x800401FE": {
+   "name": "CO_E_APPDIDNTREG",
+   "meaning": "应用程序未注册自身"
+  },
+  "0x80040110": {
+   "name": "CLASS_E_NOAGGREGATION",
+   "meaning": "该类不支持聚合"
+  },
+  "0x80040111": {
+   "name": "CLASS_E_CLASSNOTAVAILABLE",
+   "meaning": "类不可用"
+  },
+  "0x80040154": {
+   "name": "REGDB_E_CLASSNOTREG",
+   "meaning": "类未注册(CLSID 不在注册表中)"
+  },
+  "0x80040150": {
+   "name": "REGDB_E_READREGDB",
+   "meaning": "读取注册表失败"
+  },
+  "0x80040151": {
+   "name": "REGDB_E_WRITEREGDB",
+   "meaning": "写入注册表失败"
+  },
+  "0x80080001": {
+   "name": "CO_E_CLASS_CREATE_FAILED",
+   "meaning": "创建类对象失败"
+  },
+  "0x80080005": {
+   "name": "CO_E_SERVER_EXEC_FAILURE",
+   "meaning": "COM 服务器进程启动失败"
+  },
+  "0x80080009": {
+   "name": "MEM_E_INVALID_SIZE",
+   "meaning": "无效的内存块大小"
+  },
+  "0x80010001": {
+   "name": "RPC_E_CALL_REJECTED",
+   "meaning": "调用被拒绝(服务器未接受)",
+   "action": "SE 忙或挂着模态框:稍后重试;CLI 可用 --dialogs 查挂起的对话框,或用事件接口等对话框关闭后再调"
+  },
+  "0x80010002": {
+   "name": "RPC_E_CALL_CANCELED",
+   "meaning": "调用已被取消"
+  },
+  "0x80010007": {
+   "name": "RPC_E_CANTCALLOUT_INASYNCCALL",
+   "meaning": "异步调用中不能向外调用"
+  },
+  "0x80010012": {
+   "name": "RPC_E_CANTCALLOUT_ININPUTSYNCCALL",
+   "meaning": "输入同步调用中不能向外调用"
+  },
+  "0x80010100": {
+   "name": "RPC_E_SYS_CALL_FAILED",
+   "meaning": "系统调用失败"
+  },
+  "0x80010101": {
+   "name": "RPC_E_OUT_OF_RESOURCES",
+   "meaning": "资源不足"
+  },
+  "0x80010105": {
+   "name": "RPC_E_SERVERFAULT",
+   "meaning": "服务器发生异常"
+  },
+  "0x80010106": {
+   "name": "RPC_E_CHANGED_MODE",
+   "meaning": "线程模式已改变(COM 单元模型冲突)"
+  },
+  "0x80010108": {
+   "name": "RPC_E_DISCONNECTED",
+   "meaning": "对象已与客户端断开连接",
+   "action": "文档已关闭或会话失效:重新打开文档并重新取对象,别对旧句柄重试"
+  },
+  "0x80010109": {
+   "name": "RPC_E_RETRY",
+   "meaning": "应重试该操作"
+  },
+  "0x8001010A": {
+   "name": "RPC_E_SERVERCALL_RETRYLATER",
+   "meaning": "服务器忙,请稍后重试",
+   "action": "SE 正被占用:等待后重试(消息过滤器会自动重试);持续失败说明有模态框挡着"
+  },
+  "0x8001010B": {
+   "name": "RPC_E_SERVERCALL_REJECTED",
+   "meaning": "服务器拒绝该调用"
+  },
+  "0x8001010E": {
+   "name": "RPC_E_WRONG_THREAD",
+   "meaning": "从错误的线程调用(单元模型不符)"
+  },
+  "0x80010119": {
+   "name": "RPC_E_TOO_LATE",
+   "meaning": "注册太晚(调用时机已过)"
+  },
+  "0x800706BA": {
+   "name": "RPC_S_SERVER_UNAVAILABLE",
+   "meaning": "RPC 服务器不可用(目标进程不存在)"
+  },
+  "0x800706BE": {
+   "name": "RPC_S_CALL_FAILED",
+   "meaning": "远程过程调用失败"
+  },
+  "0x800706BF": {
+   "name": "RPC_S_CALL_FAILED_DNE",
+   "meaning": "RPC 调用失败(服务器未执行)"
+  },
+  "0x800706B5": {
+   "name": "RPC_S_UNKNOWN_IF",
+   "meaning": "未知接口"
+  },
+  "0x800706D9": {
+   "name": "RPC_S_SERVER_TOO_BUSY",
+   "meaning": "RPC 服务器太忙"
+  },
+  "0x80028018": {
+   "name": "TYPE_E_INVDATAREAD",
+   "meaning": "读取类型库数据失败"
+  },
+  "0x80028019": {
+   "name": "TYPE_E_UNSUPFORMAT",
+   "meaning": "不支持的类型库格式"
+  },
+  "0x8002801D": {
+   "name": "TYPE_E_LIBNOTREGISTERED",
+   "meaning": "类型库未注册"
+  },
+  "0x8002802B": {
+   "name": "TYPE_E_ELEMENTNOTFOUND",
+   "meaning": "类型库中找不到元素"
+  },
+  "0x8002802C": {
+   "name": "TYPE_E_AMBIGUOUSNAME",
+   "meaning": "名称有歧义"
+  },
+  "0x80029C4A": {
+   "name": "TYPE_E_CANTLOADLIBRARY",
+   "meaning": "无法加载类型库"
+  },
+  "0x80030002": {
+   "name": "STG_E_FILENOTFOUND",
+   "meaning": "找不到文件"
+  },
+  "0x80030005": {
+   "name": "STG_E_ACCESSDENIED",
+   "meaning": "访问被拒绝"
+  },
+  "0x80030008": {
+   "name": "STG_E_INSUFFICIENTMEMORY",
+   "meaning": "内存不足"
+  },
+  "0x80030009": {
+   "name": "STG_E_INVALIDPOINTER",
+   "meaning": "无效指针"
+  },
+  "0x80030020": {
+   "name": "STG_E_SHAREVIOLATION",
+   "meaning": "文件被其他进程占用(共享冲突)"
+  },
+  "0x80030102": {
+   "name": "STG_E_OLDFORMAT",
+   "meaning": "文件为旧格式"
+  },
+  "0x80040000": {
+   "name": "OLE_E_OLEVERB",
+   "meaning": "无效的 OLE 谓词"
+  },
+  "0x80040003": {
+   "name": "OLE_E_ADVISENOTSUPPORTED",
+   "meaning": "不支持连接点通知"
+  },
+  "0x80040005": {
+   "name": "OLE_E_NOTRUNNING",
+   "meaning": "对象未运行"
+  },
+  "0x80040007": {
+   "name": "OLE_E_BLANK",
+   "meaning": "空白对象"
+  },
+  "0x8004000A": {
+   "name": "OLE_E_CANT_BINDTOSOURCE",
+   "meaning": "无法绑定到源对象"
+  },
+  "0x800401E1": {
+   "name": "MK_E_EXCEEDEDDEADLINE",
+   "meaning": "超过等待时限"
+  },
+  "0x800401E3": {
+   "name": "MK_E_UNAVAILABLE",
+   "meaning": "请求的资源不可用",
+   "action": "GetActiveObject 连不上 SE:检查 ① SE 是否已启动;② server exe 是否在 Low IL 目录(完整性级别低于 SE 时拿不到运行实例)"
+  },
+  "0x800401E5": {
+   "name": "MK_E_NOOBJECT",
+   "meaning": "找不到对象(路径无效)"
+  },
+  "0x80070002": {
+   "name": "ERROR_FILE_NOT_FOUND",
+   "meaning": "找不到指定的文件"
+  },
+  "0x80070003": {
+   "name": "ERROR_PATH_NOT_FOUND",
+   "meaning": "找不到指定的路径"
+  },
+  "0x80070008": {
+   "name": "ERROR_NOT_ENOUGH_MEMORY",
+   "meaning": "内存不足"
+  },
+  "0x8007000F": {
+   "name": "ERROR_INVALID_DRIVE",
+   "meaning": "驱动器无效"
+  },
+  "0x80070012": {
+   "name": "ERROR_NO_MORE_FILES",
+   "meaning": "没有更多文件"
+  },
+  "0x80070020": {
+   "name": "ERROR_SHARING_VIOLATION",
+   "meaning": "文件被占用(共享冲突)"
+  },
+  "0x80070021": {
+   "name": "ERROR_LOCK_VIOLATION",
+   "meaning": "文件被锁定"
+  },
+  "0x80070032": {
+   "name": "ERROR_NOT_SUPPORTED",
+   "meaning": "不支持该请求"
+  },
+  "0x80070050": {
+   "name": "ERROR_FILE_EXISTS",
+   "meaning": "文件已存在"
+  },
+  "0x80070070": {
+   "name": "ERROR_DISK_FULL",
+   "meaning": "磁盘空间不足"
+  },
+  "0x8007007A": {
+   "name": "ERROR_INSUFFICIENT_BUFFER",
+   "meaning": "缓冲区不足"
+  },
+  "0x8007007B": {
+   "name": "ERROR_INVALID_NAME",
+   "meaning": "文件名/路径格式无效"
+  },
+  "0x8007007E": {
+   "name": "ERROR_MOD_NOT_FOUND",
+   "meaning": "找不到指定的模块(DLL)"
+  },
+  "0x800700AA": {
+   "name": "ERROR_BUSY",
+   "meaning": "资源忙"
+  },
+  "0x800700B7": {
+   "name": "ERROR_ALREADY_EXISTS",
+   "meaning": "对象已存在"
+  },
+  "0x80070103": {
+   "name": "ERROR_NO_MORE_ITEMS",
+   "meaning": "没有更多项目"
+  },
+  "0x80070216": {
+   "name": "ERROR_ARITHMETIC_OVERFLOW",
+   "meaning": "算术运算溢出"
+  },
+  "0x800703E3": {
+   "name": "ERROR_OPERATION_ABORTED",
+   "meaning": "操作已中止"
+  },
+  "0x8007045A": {
+   "name": "ERROR_DLL_INIT_FAILED",
+   "meaning": "DLL 初始化失败"
+  },
+  "0x80070490": {
+   "name": "ERROR_NOT_FOUND",
+   "meaning": "找不到元素"
+  },
+  "0x800704C7": {
+   "name": "ERROR_CANCELLED",
+   "meaning": "操作被取消"
+  },
+  "0x800705B4": {
+   "name": "ERROR_TIMEOUT",
+   "meaning": "操作超时"
+  },
+  "0x80040225": {
+   "name": "SE_E_NOT_IN_CONTEXT",
+   "meaning": "对象不在所请求的上下文(SE 专用码,系统无官方消息)",
+   "action": "视图/编辑环境归属变了:用 se_view_context action=map 判定视图与上下文对应关系;双击视图进入/退出编辑会改变归属"
+  }
+ },
+ "seEnums": {
+  "AssemblyCopyStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seAssemblyCopyStatusOK"
+    },
+    "1": {
+     "name": "seAssemblyCopyStatusOutOfDate"
+    },
+    "2": {
+     "name": "seAssemblyCopyStatusFrozen"
+    },
+    "3": {
+     "name": "seAssemblyCopyStatusPending"
+    },
+    "4": {
+     "name": "seAssemblyCopyStatusMirrorPlaneMissing"
+    },
+    "5": {
+     "name": "seAssemblyCopyStatusCoordinateSystemMissing"
+    },
+    "6": {
+     "name": "seAssemblyCopyStatusFailed"
+    }
+   }
+  },
+  "AssemblyFamilyMemberStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seAssemblyFamilyMemberStatusUpToDate"
+    },
+    "1": {
+     "name": "seAssemblyFamilyMemberStatusNotPopulated"
+    },
+    "2": {
+     "name": "seAssemblyFamilyMemberStatusPopulatedAndOutOfDate"
+    }
+   }
+  },
+  "AttachedStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seStatusOK"
+    },
+    "1": {
+     "name": "seStatusMissingPropertyObject"
+    },
+    "2": {
+     "name": "seStatusMissingPropertyTable"
+    },
+    "3": {
+     "name": "seStatusMissingAttachedEntites"
+    },
+    "4": {
+     "name": "seStatusDuplicateProperties"
+    },
+    "5": {
+     "name": "seStatusPropertyUpdateFailed"
+    },
+    "6": {
+     "name": "seStatusSickAttachedEntities"
+    },
+    "7": {
+     "name": "seAttachmentStatusUnknown"
+    }
+   }
+  },
+  "CopySketchErrorStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seCopySketchErrorStatus_success_no_error"
+    },
+    "1": {
+     "name": "seCopySketchErrorStatus_failure_unknown_error"
+    },
+    "2": {
+     "name": "seCopySketchErrorStatus_warning_profile_text_not_copied"
+    },
+    "3": {
+     "name": "seCopySketchErrorStatus_failure_no_valid_elements_copied"
+    },
+    "4": {
+     "name": "seCopySketchErrorStatus_failure_checkout_for_writeaccess"
+    },
+    "5": {
+     "name": "seCopySketchErrorStatus_failure_activate_part"
+    },
+    "6": {
+     "name": "seCopySketchErrorStatus_failure_nonassoc_create_copy"
+    },
+    "7": {
+     "name": "seCopySketchErrorStatus_failure_assoc_create_copy"
+    },
+    "8": {
+     "name": "seCopySketchErrorStatus_failure_invalidarg"
+    },
+    "9": {
+     "name": "seCopySketchErrorStatus_failure_assoc_copy_not_allowed_with_foa"
+    }
+   }
+  },
+  "CurveSegmentPathAdditionStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seCurveSegmentPathAdditionStatusSucceeded"
+    },
+    "1": {
+     "name": "seCurveSegmentPathAdditionStatusFailedUnknownReason"
+    },
+    "2": {
+     "name": "seCurveSegmentPathAdditionStatusFailedBreak"
+    },
+    "3": {
+     "name": "seCurveSegmentPathAdditionStatusFailedDuplicate"
+    },
+    "4": {
+     "name": "seCurveSegmentPathAdditionStatusFailedFork"
+    },
+    "5": {
+     "name": "seCurveSegmentPathAdditionStatusFailedIntersection"
+    },
+    "6": {
+     "name": "seCurveSegmentPathAdditionStatusFailedLoop"
+    },
+    "7": {
+     "name": "seCurveSegmentPathAdditionStatusFailedUnknownSegment"
+    },
+    "8": {
+     "name": "seCurveSegmentPathAdditionStatusFailedLength"
+    }
+   }
+  },
+  "CurveSegmentPathRemovalStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seCurveSegmentPathRemovalStatusSucceeded"
+    },
+    "1": {
+     "name": "seCurveSegmentPathRemovalStatusFailedUnknownReason"
+    },
+    "2": {
+     "name": "seCurveSegmentPathRemovalStatusFailedBreak"
+    },
+    "3": {
+     "name": "seCurveSegmentPathRemovalStatusFailedNotInPath"
+    },
+    "4": {
+     "name": "seCurveSegmentPathRemovalStatusFailedSingle"
+    },
+    "5": {
+     "name": "seCurveSegmentPathRemovalStatusFailedEmpty"
+    }
+   }
+  },
+  "DimReattachStatusConstants": {
+   "members": {
+    "0": {
+     "name": "igDimReattachSucceeded"
+    },
+    "1": {
+     "name": "igDimReattachFailed"
+    }
+   }
+  },
+  "DimStatusConstants": {
+   "members": {
+    "1": {
+     "name": "seDimStatusDetached"
+    },
+    "2": {
+     "name": "seDimStatusError"
+    },
+    "3": {
+     "name": "seDimStatusDriving"
+    },
+    "4": {
+     "name": "seDimStatusDriven"
+    },
+    "5": {
+     "name": "seOneEndDetached"
+    },
+    "6": {
+     "name": "seNonDrivablePMI"
+    }
+   }
+  },
+  "DividedPartStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seDividedPartStatusNotCreated"
+    },
+    "1": {
+     "name": "seDividedStatusUpToDate"
+    },
+    "2": {
+     "name": "seDividedStatusOutOfDate"
+    },
+    "3": {
+     "name": "seDividedStatusLinkBroken"
+    }
+   }
+  },
+  "DocumentStatus": {
+   "members": {
+    "0": {
+     "name": "igStatusAvailable"
+    },
+    "1": {
+     "name": "igStatusInWork"
+    },
+    "2": {
+     "name": "igStatusInReview"
+    },
+    "3": {
+     "name": "igStatusReleased"
+    },
+    "4": {
+     "name": "igStatusBaselined"
+    },
+    "5": {
+     "name": "igStatusObsolete"
+    },
+    "6": {
+     "name": "igStatusUnknown"
+    }
+   },
+   "meaning": "文档生命周期状态(在制/审核/发布/基线)"
+  },
+  "EquationDrivenCurveErrorCode": {
+   "members": {
+    "-1": {
+     "name": "seEquationDrivenCurveErrorCodeUnknownError"
+    },
+    "0": {
+     "name": "seEquationDrivenCurveErrorCodeNoError"
+    },
+    "1": {
+     "name": "seEquationDrivenCurveErrorCodeInvalidExpression"
+    },
+    "2": {
+     "name": "seEquationDrivenCurveErrorCodeSelfIntersecting"
+    },
+    "3": {
+     "name": "seEquationDrivenCurveErrorCodeDiscontinuous"
+    }
+   }
+  },
+  "FamilyMemberStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seStatusUnknown"
+    },
+    "1": {
+     "name": "seStatusNotCreated"
+    },
+    "2": {
+     "name": "seStatusUpToDate"
+    },
+    "3": {
+     "name": "seStatusOutOfDate"
+    },
+    "4": {
+     "name": "seStatusLinkBroken"
+    },
+    "7": {
+     "name": "seStatusFileReleased"
+    }
+   }
+  },
+  "FeatureStatusConstants": {
+   "members": {
+    "1216476310": {
+     "name": "igFeatureOK",
+     "meaning": "特征正常"
+    },
+    "1216476311": {
+     "name": "igFeatureFailed",
+     "meaning": "几何未生成(僵尸特征,唯一可删档)"
+    },
+    "1216476312": {
+     "name": "igFeatureWarned",
+     "meaning": "特征已生成但有警告(保留,几何可用)"
+    },
+    "1216476313": {
+     "name": "igFeatureSuppressed",
+     "meaning": "被用户主动压缩(保留,禁删)"
+    },
+    "1216476314": {
+     "name": "igFeatureRolledBack",
+     "meaning": "被回滚(保留)"
+    }
+   },
+   "meaning": "特征构建状态(五档:P0 已用于判定是否删除特征)"
+  },
+  "GenerateMasterImportListError": {
+   "members": {
+    "1": {
+     "name": "NoDocsFound"
+    }
+   }
+  },
+  "GenerateSourceImportListError": {
+   "members": {
+    "1": {
+     "name": "GenerateSourceImportListError_NoDocsFound"
+    }
+   }
+  },
+  "GussetPlateErrorCode": {
+   "members": {
+    "-1": {
+     "name": "GussetPlateErrorCodeUnknownError"
+    },
+    "0": {
+     "name": "GussetPlateErrorCodeNoError"
+    },
+    "1": {
+     "name": "GussetPlateErrorCodeMissingParameter"
+    },
+    "2": {
+     "name": "GussetPlateErrorCodeInvalidParameter"
+    },
+    "3": {
+     "name": "GussetPlateErrorCodeNoReferencePlane"
+    },
+    "4": {
+     "name": "GussetPlateErrorCodeEditFailed"
+    }
+   }
+  },
+  "HarnessSaveAsEcadStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seHarnessSaveAsEcadStatus_Success"
+    },
+    "1": {
+     "name": "seHarnessSaveAsEcadStatus_Failed"
+    },
+    "2": {
+     "name": "seHarnessSaveAsEcadStatus_FailedBadArgs"
+    },
+    "3": {
+     "name": "seHarnessSaveAsEcadStatus_FailedNoComps"
+    },
+    "4": {
+     "name": "seHarnessSaveAsEcadStatus_FailedNoConns"
+    },
+    "5": {
+     "name": "seHarnessSaveAsEcadStatus_FailedDupComps"
+    },
+    "6": {
+     "name": "seHarnessSaveAsEcadStatus_FailedDupConns"
+    },
+    "7": {
+     "name": "seHarnessSaveAsEcadStatus_FailedComps"
+    },
+    "8": {
+     "name": "seHarnessSaveAsEcadStatus_FailedConns"
+    },
+    "9": {
+     "name": "seHarnessSaveAsEcadStatus_FailedBoth"
+    },
+    "10": {
+     "name": "seHarnessSaveAsEcadStatus_FailedBadConfig"
+    }
+   }
+  },
+  "InterferenceStatusConstants": {
+   "members": {
+    "1": {
+     "name": "seInterferenceStatusNoInterference"
+    },
+    "2": {
+     "name": "seInterferenceStatusConfirmedInterference"
+    },
+    "3": {
+     "name": "seInterferenceStatusProbableInterference"
+    },
+    "4": {
+     "name": "seInterferenceStatusConfirmedAndProbableInterference"
+    },
+    "5": {
+     "name": "seInterferenceStatusIncompleteAnalysis"
+    }
+   }
+  },
+  "LayoutStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seLayoutAddedNewLayout"
+    },
+    "1": {
+     "name": "seLayoutReturnedExistingLayout"
+    },
+    "2": {
+     "name": "seLayoutFailedBecauseOfExisting"
+    }
+   }
+  },
+  "MultiBodyPublishStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seMBPStatusUnknown"
+    },
+    "1": {
+     "name": "seMBPStatusNotCreated"
+    },
+    "2": {
+     "name": "seMBPStatusUpToDate"
+    },
+    "3": {
+     "name": "seMBPStatusOutOfDate"
+    },
+    "4": {
+     "name": "seMBPStatusFailed"
+    },
+    "5": {
+     "name": "seMBPStatusDeleted"
+    },
+    "6": {
+     "name": "seMBPStatusLinkBroken"
+    }
+   }
+  },
+  "OccurrenceStatusConstants": {
+   "members": {
+    "1": {
+     "name": "seOccurrenceStatusWellDefined"
+    },
+    "2": {
+     "name": "seOccurrenceStatusFixed"
+    },
+    "4": {
+     "name": "seOccurrenceStatusUnderDefined"
+    },
+    "32776": {
+     "name": "seOccurrenceStatusOverDefined"
+    },
+    "32784": {
+     "name": "seOccurrenceStatusNotConsistent"
+    },
+    "32800": {
+     "name": "seOccurrenceStatusNotChanged"
+    },
+    "32832": {
+     "name": "seOccurrenceStatusNonAlgebraic"
+    },
+    "32896": {
+     "name": "seOccurrenceStatusUnknown"
+    }
+   },
+   "meaning": "装配中实例的定位状态"
+  },
+  "PartStatusConstants": {
+   "members": {
+    "1": {
+     "name": "igPartStatusWellDefined"
+    },
+    "2": {
+     "name": "igPartStatusFixed"
+    },
+    "4": {
+     "name": "igPartStatusUnderDefined"
+    },
+    "32776": {
+     "name": "igPartStatusOverDefined"
+    },
+    "32784": {
+     "name": "igPartStatusNotConsistent"
+    },
+    "32800": {
+     "name": "igPartStatusNotChanged"
+    },
+    "32832": {
+     "name": "igPartStatusNonAlgebraic"
+    },
+    "32896": {
+     "name": "igPartStatusUnknown"
+    }
+   },
+   "meaning": "零件约束状态(欠约束/完全约束/过约束等)"
+  },
+  "PhysicalPropertiesStatusConstants": {
+   "members": {
+    "0": {
+     "name": "sePhysicalPropertiesStatus_None"
+    },
+    "1": {
+     "name": "sePhysicalPropertiesStatus_Model"
+    },
+    "2": {
+     "name": "sePhysicalPropertiesStatus_User"
+    }
+   }
+  },
+  "PhysicalThreadErrorCode": {
+   "members": {
+    "0": {
+     "name": "sePhysicalThreadNoError"
+    },
+    "1": {
+     "name": "sePhysicalThreadUnknownError"
+    },
+    "2": {
+     "name": "sePhysicalThreadProfileCreationError"
+    },
+    "3": {
+     "name": "sePhysicalThreadHelixCreationError"
+    },
+    "4": {
+     "name": "sePhysicalThreadBooleanOperationError"
+    },
+    "5": {
+     "name": "sePhysicalThreadInvalidThreadTypeError"
+    },
+    "6": {
+     "name": "sePhysicalThreadInvalidPitchValueError"
+    },
+    "7": {
+     "name": "sePhysicalThreadDisabledByAdminError"
+    }
+   }
+  },
+  "ProfileValidationStatus": {
+   "members": {
+    "0": {
+     "name": "igProfileStatusValid"
+    },
+    "-1": {
+     "name": "igProfileStatusInvalid"
+    }
+   },
+   "meaning": "轮廓校验状态"
+  },
+  "PropertyTextErrorConstants": {
+   "members": {
+    "0": {
+     "name": "sePropertyTextDoNotShowError"
+    },
+    "1": {
+     "name": "sePropertyTextSolidEdgeError"
+    },
+    "2": {
+     "name": "sePropertyTextMyError"
+    }
+   }
+  },
+  "QueryStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seQueryStatusAvailable"
+    },
+    "1": {
+     "name": "seQueryStatusInWork"
+    },
+    "2": {
+     "name": "seQueryStatusInReview"
+    },
+    "3": {
+     "name": "seQueryStatusReleased"
+    }
+   }
+  },
+  "Relation3dDetailedStatusConstants": {
+   "members": {
+    "0": {
+     "name": "igRelation3dDetailedStatusUnknown"
+    },
+    "1": {
+     "name": "igRelation3dDetailedStatusSolved"
+    },
+    "2": {
+     "name": "igRelation3dDetailedStatusSuppressed"
+    },
+    "3": {
+     "name": "igRelation3dDetailedStatusBetweenSetMembers"
+    },
+    "4": {
+     "name": "igRelation3dDetailedStatusBetweenFixed"
+    },
+    "5": {
+     "name": "igRelation3dDetailedStatusUnsatisfied"
+    },
+    "6": {
+     "name": "igRelation3dDetailedStatusMissingGeometry"
+    }
+   }
+  },
+  "Relation3dStatusConstants": {
+   "members": {
+    "0": {
+     "name": "igRelation3dStatusUnsolved"
+    },
+    "1": {
+     "name": "igRelation3dStatusSolved"
+    }
+   },
+   "meaning": "三维关系求解状态"
+  },
+  "RouteStatus": {
+   "members": {
+    "0": {
+     "name": "igInvalidSlip"
+    },
+    "1": {
+     "name": "igRouteComplete"
+    },
+    "2": {
+     "name": "igNotYetRouted"
+    },
+    "3": {
+     "name": "igRouteInProgress"
+    }
+   }
+  },
+  "SaveAsHarnessTopologyStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seSaveAsHarnessTopologyStatus_Success"
+    },
+    "1": {
+     "name": "seSaveAsHarnessTopologyStatus_FailedBadArgs"
+    }
+   }
+  },
+  "SectionSketchesErrorCode": {
+   "members": {
+    "-1": {
+     "name": "seSectionSketchesUnknownError"
+    },
+    "0": {
+     "name": "seSectionSketchesNoError"
+    },
+    "1": {
+     "name": "seSectionSketchesNotPlaneIntersecting"
+    },
+    "2": {
+     "name": "seSectionSketchesSomePlaneIntersecting"
+    }
+   }
+  },
+  "SegmentRelation3dStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seSegmentRelation3dStatusUnsolved"
+    },
+    "1": {
+     "name": "seSegmentRelation3dStatusSolved"
+    }
+   }
+  },
+  "SensorStatusConstants": {
+   "members": {
+    "0": {
+     "name": "seSensorStatusUpToDate"
+    },
+    "1": {
+     "name": "seSensorStatusOutOfDate"
+    },
+    "2": {
+     "name": "seSensorStatusInError"
+    }
+   }
+  },
+  "TrimExtendErrorCode": {
+   "members": {
+    "-1": {
+     "name": "TrimExtendErrorCodeUnknownError"
+    },
+    "0": {
+     "name": "TrimExtendErrorCodeNoError"
+    },
+    "1": {
+     "name": "TrimExtendErrorCodeMissingParameter"
+    },
+    "2": {
+     "name": "TrimExtendErrorCodeInvalidParameter"
+    },
+    "3": {
+     "name": "TrimExtendErrorCodeNoReferencePlane"
+    },
+    "4": {
+     "name": "TrimExtendErrorCodeEditFailed"
+    }
+   }
+  },
+  "TubeSegmentAdditionStatusConstants": {
+   "members": {
+    "1": {
+     "name": "seTubeSegmentAdditionStatusSucceeded"
+    },
+    "2": {
+     "name": "seTubeSegmentAdditionStatusFailedSplit"
+    },
+    "3": {
+     "name": "seTubeSegmentAdditionStatusFailedDisjoint"
+    },
+    "4": {
+     "name": "seTubeSegmentAdditionStatusFailedUnknownReason"
+    }
+   }
+  },
+  "TubeSegmentRemovalStatusConstants": {
+   "members": {
+    "1": {
+     "name": "seTubeSegmentRemovalStatusSucceeded"
+    },
+    "2": {
+     "name": "seTubeSegmentRemovalStatusFailedNotPartOfTube"
+    },
+    "3": {
+     "name": "seTubeSegmentRemovalStatusFailedDueToDisjoint"
+    },
+    "4": {
+     "name": "seTubeSegmentRemovalStatusFailedUnknownReason"
+    }
+   }
+  },
+  "VirtualComponentStatusConstants": {
+   "members": {
+    "1": {
+     "name": "seVCStatus_Success"
+    },
+    "2": {
+     "name": "seVCStatus_Fail"
+    },
+    "3": {
+     "name": "seVCStatus_AddUnManagedToManaged"
+    },
+    "4": {
+     "name": "seVCStatus_AddManagedToUnManaged"
+    },
+    "5": {
+     "name": "seVCStatus_ReplaceConflictWithVirtualComponent"
+    },
+    "6": {
+     "name": "seVCStatus_SourceFileNotFound"
+    },
+    "7": {
+     "name": "seVCStatus_NameConflictWithVirtualComponent"
+    },
+    "8": {
+     "name": "seVCStatus_NameConflictWithPreDefinedComponent"
+    },
+    "9": {
+     "name": "seVCStatus_DuplicateNameConflictWithVirtualComponent"
+    },
+    "10": {
+     "name": "seVCStatus_CannotAddToComponent"
+    },
+    "11": {
+     "name": "seVCStatus_ComponentSketchMissing"
+    }
+   }
+  },
+  "WeldmentLinkStatusConstants": {
+   "members": {
+    "1": {
+     "name": "seLinkOK"
+    },
+    "2": {
+     "name": "seLinkOutOfDate"
+    },
+    "3": {
+     "name": "seLinkBroken"
+    }
+   }
+  }
+ }
+}
